@@ -1,12 +1,56 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
 dist/
 build/
-*.egg-info/
 .venv/
 venv/
-.DS_Store
+env/
+
+# Secrets & environment
+.env
+.env.*
+*.env
+secrets.json
+secrets.yaml
+secrets.toml
+credentials.json
+config.local.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Benchmark data & outputs (internal Sirius datasets stay out)
 *.json
 !pyproject.toml
+benchmark_output/
+data/
+datasets/
+outputs/
+results/
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Internal paths / notebooks with output
+*.ipynb
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
