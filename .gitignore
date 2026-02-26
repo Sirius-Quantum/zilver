@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+.DS_Store
+*.json
+!pyproject.toml
