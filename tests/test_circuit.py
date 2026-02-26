@@ -95,6 +95,81 @@ class TestCircuitFactories:
         assert -n - 0.1 <= result <= n + 0.1
 
 
+class TestU3Gate:
+    def test_u3_is_unitary(self):
+        """U3 output must be a unitary matrix for arbitrary angles."""
+        import math
+        c = Circuit(1)
+        c.u3(qubit=0, theta_idx=0, phi_idx=1, lam_idx=2)
+        f = c.compile(observable="z0")
+
+        for theta, phi, lam in [(0.3, 0.7, 1.1), (math.pi/2, 0, math.pi), (math.pi, math.pi/4, -math.pi/3)]:
+            sv = c.statevector(mx.array([theta, phi, lam], dtype=mx.float32))
+            arr = sv.numpy()
+            assert abs(np.linalg.norm(arr) - 1.0) < 1e-5, f"Norm not preserved for {theta},{phi},{lam}"
+
+    def test_u3_reduces_to_ry(self):
+        """U3(theta, 0, 0) == RY(theta) up to global phase."""
+        theta = 0.7
+        c_u3 = Circuit(1)
+        c_u3.u3(qubit=0, theta_idx=0, phi_idx=1, lam_idx=2)
+
+        c_ry = Circuit(1)
+        c_ry.ry(qubit=0, param_idx=0)
+
+        sv_u3 = c_u3.statevector(mx.array([theta, 0.0, 0.0], dtype=mx.float32)).numpy()
+        sv_ry = c_ry.statevector(mx.array([theta], dtype=mx.float32)).numpy()
+
+        # Same up to global phase: |<psi_u3|psi_ry>|^2 == 1
+        overlap = abs(np.vdot(sv_u3, sv_ry)) ** 2
+        assert abs(overlap - 1.0) < 1e-5
+
+    def test_u3_reduces_to_rx(self):
+        """U3(theta, -pi/2, pi/2) == RX(theta) up to global phase."""
+        theta = 1.2
+        c_u3 = Circuit(1)
+        c_u3.u3(qubit=0, theta_idx=0, phi_idx=1, lam_idx=2)
+
+        c_rx = Circuit(1)
+        c_rx.rx(qubit=0, param_idx=0)
+
+        sv_u3 = c_u3.statevector(mx.array([theta, -math.pi/2, math.pi/2], dtype=mx.float32)).numpy()
+        sv_rx = c_rx.statevector(mx.array([theta], dtype=mx.float32)).numpy()
+
+        overlap = abs(np.vdot(sv_u3, sv_rx)) ** 2
+        assert abs(overlap - 1.0) < 1e-5
+
+    def test_u3_vmappable(self):
+        """U3 must work inside mx.vmap - no float() calls."""
+        c = Circuit(2)
+        c.u3(qubit=0, theta_idx=0, phi_idx=1, lam_idx=2)
+        c.cnot(0, 1)
+        c.u3(qubit=1, theta_idx=3, phi_idx=4, lam_idx=5)
+        f = c.compile()
+
+        rng = np.random.default_rng(0)
+        batch = rng.uniform(-math.pi, math.pi, (50, c.n_params)).astype(np.float32)
+        results = mx.vmap(f)(mx.array(batch))
+        mx.eval(results)
+        arr = np.array(results.tolist())
+        assert arr.shape == (50,)
+        assert np.all(np.isfinite(arr))
+
+    def test_u3_gradient_via_param_shift(self):
+        """Parameter shift gradients must be non-trivial for U3."""
+        from zilver.gradients import param_shift_gradient
+        c = Circuit(1)
+        c.u3(qubit=0, theta_idx=0, phi_idx=1, lam_idx=2)
+        f = c.compile(observable="z0")
+
+        params = mx.array([math.pi/3, math.pi/4, math.pi/6], dtype=mx.float32)
+        grads = param_shift_gradient(f, params)
+        mx.eval(grads)
+        arr = np.array(grads.tolist())
+        # At least one gradient must be non-zero
+        assert np.max(np.abs(arr)) > 1e-4
+
+
 class TestVmap:
     def test_vmap_over_param_batch(self):
         """Core Sirius use case: batch 400 param vectors in one call."""

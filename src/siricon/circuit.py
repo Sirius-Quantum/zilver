@@ -70,6 +70,44 @@ class GateOp:
         return cls(gate_fn=_rz, qubits=[qubit], param_indices=[param_idx])
 
     @classmethod
+    def u3(cls, qubit: int, theta_idx: int, phi_idx: int, lam_idx: int) -> "GateOp":
+        """
+        Universal single-qubit gate U3(theta, phi, lambda).
+
+        Any single-qubit unitary is expressible as U3 up to global phase:
+            U3 = [[cos(t/2),              -e^{i*lam} * sin(t/2)        ],
+                  [e^{i*phi} * sin(t/2),   e^{i*(phi+lam)} * cos(t/2)  ]]
+
+        Subsumes RX, RY, RZ as special cases:
+            RX(t) = U3(t, -pi/2, pi/2)
+            RY(t) = U3(t, 0, 0)
+            RZ(t) = U3(0, 0, t)  (up to global phase)
+        """
+        def _u3(p):
+            theta, phi, lam = p[0], p[1], p[2]
+            ct = mx.cos(theta / 2)
+            st = mx.sin(theta / 2)
+
+            # Build matrix elements as (real, imag) pairs
+            # [0,0]: cos(theta/2) + 0j
+            r00_re, r00_im = ct, mx.zeros_like(ct)
+            # [0,1]: -e^{i*lam} * sin(theta/2) = -cos(lam)*st - i*sin(lam)*st
+            r01_re = -mx.cos(lam) * st
+            r01_im = -mx.sin(lam) * st
+            # [1,0]: e^{i*phi} * sin(theta/2) = cos(phi)*st + i*sin(phi)*st
+            r10_re =  mx.cos(phi) * st
+            r10_im =  mx.sin(phi) * st
+            # [1,1]: e^{i*(phi+lam)} * cos(theta/2)
+            r11_re = mx.cos(phi + lam) * ct
+            r11_im = mx.sin(phi + lam) * ct
+
+            real = mx.stack([mx.stack([r00_re, r01_re]), mx.stack([r10_re, r11_re])])
+            imag = mx.stack([mx.stack([r00_im, r01_im]), mx.stack([r10_im, r11_im])])
+            return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
+
+        return cls(gate_fn=_u3, qubits=[qubit], param_indices=[theta_idx, phi_idx, lam_idx])
+
+    @classmethod
     def cnot(cls, control: int, target: int) -> "GateOp":
         return cls.fixed(G.CNOT(), [control, target])
 
@@ -136,6 +174,11 @@ class Circuit:
     def rz(self, qubit: int, param_idx: int) -> "Circuit":
         self.n_params = max(self.n_params, param_idx + 1)
         return self.add(GateOp.rz(qubit, param_idx))
+
+    def u3(self, qubit: int, theta_idx: int, phi_idx: int, lam_idx: int) -> "Circuit":
+        """Universal single-qubit gate. Consumes 3 parameters: theta, phi, lambda."""
+        self.n_params = max(self.n_params, theta_idx + 1, phi_idx + 1, lam_idx + 1)
+        return self.add(GateOp.u3(qubit, theta_idx, phi_idx, lam_idx))
 
     def rzz(self, qubit_a: int, qubit_b: int, param_idx: int) -> "Circuit":
         self.n_params = max(self.n_params, param_idx + 1)
