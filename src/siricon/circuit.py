@@ -108,34 +108,6 @@ class GateOp:
         return cls(gate_fn=_u3, qubits=[qubit], param_indices=[theta_idx, phi_idx, lam_idx])
 
     @classmethod
-    def fsim(cls, qubit_a: int, qubit_b: int, theta_idx: int, phi_idx: int) -> "GateOp":
-        """
-        Fermionic simulation gate — Apple Silicon native.
-        MLX-native construction: sparse structure maps to efficient Metal element-wise ops.
-        theta: swap angle, phi: conditional phase on |11>.
-        """
-        def _fsim(p):
-            theta, phi = p[0], p[1]
-            c   = mx.cos(theta)
-            s   = mx.sin(theta)
-            z   = mx.zeros_like(c)
-            one = mx.ones_like(c)
-            real = mx.stack([
-                mx.stack([one, z,  z,          z]),
-                mx.stack([z,   c,  z,          z]),
-                mx.stack([z,   z,  c,          z]),
-                mx.stack([z,   z,  z, mx.cos(phi)]),
-            ])
-            imag = mx.stack([
-                mx.stack([z,  z,  z,            z]),
-                mx.stack([z,  z, -s,            z]),
-                mx.stack([z, -s,  z,            z]),
-                mx.stack([z,  z,  z, -mx.sin(phi)]),
-            ])
-            return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
-        return cls(gate_fn=_fsim, qubits=[qubit_a, qubit_b], param_indices=[theta_idx, phi_idx])
-
-    @classmethod
     def cnot(cls, control: int, target: int) -> "GateOp":
         return cls.fixed(G.CNOT(), [control, target])
 
@@ -238,11 +210,6 @@ class Circuit:
             return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
         op = GateOp(gate_fn=_rzz, qubits=[qubit_a, qubit_b], param_indices=[param_idx])
         return self.add(op)
-
-    def fsim(self, qubit_a: int, qubit_b: int, theta_idx: int, phi_idx: int) -> "Circuit":
-        """Apple Silicon native fSim gate. theta: swap angle, phi: conditional phase."""
-        self.n_params = max(self.n_params, theta_idx + 1, phi_idx + 1)
-        return self.add(GateOp.fsim(qubit_a, qubit_b, theta_idx, phi_idx))
 
     def toffoli(self, control_a: int, control_b: int, target: int) -> "Circuit":
         """Toffoli (CCX) gate: flips target when both controls are |1>."""
@@ -427,43 +394,31 @@ def efficient_su2(n_qubits: int, depth: int, entanglement: str = "linear") -> Ci
     return hardware_efficient(n_qubits, depth, entanglement)
 
 
-def variational_simulator(n_qubits: int, depth: int, gate: str = "fsim") -> Circuit:
+def variational_simulator(n_qubits: int, depth: int) -> Circuit:
     """
     Variational quantum simulator ansatz for Hamiltonian simulation.
 
     Implements a first-order Trotterized transverse-field Ising model:
         H = -J * sum_i Z_i Z_{i+1}  -  h * sum_i X_i
 
-    Each Trotter layer has:
-        - Ising ZZ coupling: RZZ(2*J*dt) on each nearest-neighbor pair  [or fSim]
-        - Transverse field:  RX(2*h*dt) on each qubit
+    Each Trotter layer:
+        - Ising ZZ coupling: RZZ(theta) on each nearest-neighbor pair
+        - Transverse field:  RX(h) on each qubit
 
-    Args:
-        gate:  "fsim"  — fSim(theta, phi) per pair (2 params/pair/layer)
-               "rzz"   — RZZ(theta) per pair (1 param/pair/layer), standard Trotter
-
-    Parameter layout (fsim):
-        layer 0: [theta_01, phi_01, theta_12, phi_12, ..., h_0, h_1, ..., h_{n-1}]
-        layer 1: [...same...]
-        Total params: depth * (2*(n-1) + n)  [fsim]  or  depth * ((n-1) + n)  [rzz]
+    Parameter layout:
+        layer 0: [theta_01, theta_12, ..., h_0, h_1, ..., h_{n-1}]
+        Total params: depth * ((n-1) + n)
     """
     c = Circuit(n_qubits)
     p = 0
 
-    # Initial Hadamard layer — prepares superposition
     for q in range(n_qubits):
         c.h(q)
 
     for _ in range(depth):
-        # Coupling layer
         for q in range(n_qubits - 1):
-            if gate == "fsim":
-                c.fsim(q, q + 1, theta_idx=p, phi_idx=p + 1)
-                p += 2
-            else:
-                c.rzz(q, q + 1, param_idx=p)
-                p += 1
-        # Transverse field / mixer layer
+            c.rzz(q, q + 1, param_idx=p)
+            p += 1
         for q in range(n_qubits):
             c.rx(q, param_idx=p)
             p += 1

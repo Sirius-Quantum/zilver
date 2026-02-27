@@ -1,5 +1,5 @@
 """
-Tests for: fSim (Apple Silicon native), Toffoli, Fredkin, variational_simulator.
+Tests for: Toffoli, Fredkin, variational_simulator, gate fusion.
 """
 
 import math
@@ -23,76 +23,6 @@ def is_unitary(m, atol=1e-5):
 def ev(x):
     mx.eval(x)
     return float(x.item())
-
-
-# ---------------------------------------------------------------------------
-# fSim gate
-# ---------------------------------------------------------------------------
-
-class TestFSim:
-    @pytest.mark.parametrize("theta,phi", [
-        (0.0, 0.0), (math.pi/4, math.pi/3), (math.pi/2, 0.0), (math.pi/2, math.pi)
-    ])
-    def test_fsim_is_unitary(self, theta, phi):
-        assert is_unitary(to_np(G.fSim(theta, phi)))
-
-    def test_fsim_zero_angles_is_identity(self):
-        np.testing.assert_allclose(
-            to_np(G.fSim(0.0, 0.0)),
-            np.eye(4, dtype=np.complex64), atol=1e-6
-        )
-
-    def test_fsim_pi2_zero_is_iswap(self):
-        # fSim(pi/2, 0) == iSWAP
-        np.testing.assert_allclose(
-            np.abs(to_np(G.fSim(math.pi/2, 0.0))),
-            np.abs(to_np(G.iSWAP())), atol=1e-5
-        )
-
-    def test_fsim_vmappable(self):
-        c = Circuit(3)
-        c.fsim(0, 1, theta_idx=0, phi_idx=1)
-        c.fsim(1, 2, theta_idx=2, phi_idx=3)
-        f = c.compile()
-
-        rng = np.random.default_rng(0)
-        batch = rng.uniform(-math.pi, math.pi, (50, c.n_params)).astype(np.float32)
-        results = mx.vmap(f)(mx.array(batch))
-        mx.eval(results)
-        arr = np.array(results.tolist())
-        assert arr.shape == (50,)
-        assert np.all(np.isfinite(arr))
-
-    def test_fsim_observable_sensitive_to_theta(self):
-        # <Z_0> = sin^2(theta): 0 at theta=0, 1 at theta=pi/2.
-        # The standard pi/2 parameter shift cannot detect this because
-        # sin^2(theta + pi/2) = cos^2(theta) = sin^2(theta - pi/2) for ALL theta.
-        # fSim's generator requires a different shift or finite differences.
-        # We verify sensitivity by checking the observable range directly.
-        c = Circuit(2)
-        c.h(0)
-        c.fsim(0, 1, theta_idx=0, phi_idx=1)
-        f = c.compile(observable="z0")
-
-        v_zero = float(f(mx.array([0.0, 0.0], dtype=mx.float32)).item())
-        v_pi2  = float(f(mx.array([math.pi / 2, 0.0], dtype=mx.float32)).item())
-
-        assert abs(v_zero) < 0.02           # sin^2(0) = 0
-        assert abs(v_pi2 - 1.0) < 0.02     # sin^2(pi/2) = 1
-
-    def test_fsim_acts_only_on_01_10_subspace(self):
-        # |00> and |11> should only pick up a phase, not swap amplitudes
-        n = 2
-        state_00 = mx.array([1.0, 0.0, 0.0, 0.0], dtype=mx.complex64)
-        from zilver.simulator import apply_gate
-        result = apply_gate(state_00, G.fSim(math.pi/3, math.pi/4), [0, 1], n)
-        mx.eval(result)
-        arr = np.array(result.tolist())
-        # |00> is unaffected by fSim (top-left element is 1)
-        assert abs(abs(arr[0]) - 1.0) < 1e-5
-        assert abs(arr[1]) < 1e-5
-        assert abs(arr[2]) < 1e-5
-        assert abs(arr[3]) < 1e-5
 
 
 # ---------------------------------------------------------------------------
@@ -180,9 +110,8 @@ class TestFredkin:
 # ---------------------------------------------------------------------------
 
 class TestVariationalSimulator:
-    @pytest.mark.parametrize("gate", ["fsim", "rzz"])
-    def test_vs_runs(self, gate):
-        c = variational_simulator(n_qubits=4, depth=2, gate=gate)
+    def test_vs_runs(self):
+        c = variational_simulator(n_qubits=4, depth=2)
         assert c.n_params > 0
         params = mx.array(
             np.random.uniform(-math.pi, math.pi, c.n_params).astype(np.float32)
@@ -191,22 +120,15 @@ class TestVariationalSimulator:
         result = ev(f(params))
         assert -4.1 <= result <= 4.1
 
-    def test_vs_fsim_param_count(self):
-        # depth * (2*(n-1) + n) for fsim
-        n, d = 6, 3
-        c = variational_simulator(n, d, gate="fsim")
-        expected = d * (2 * (n - 1) + n)
-        assert c.n_params == expected, f"Expected {expected} params, got {c.n_params}"
-
-    def test_vs_rzz_param_count(self):
+    def test_vs_param_count(self):
         # depth * ((n-1) + n) for rzz
         n, d = 6, 3
-        c = variational_simulator(n, d, gate="rzz")
+        c = variational_simulator(n, d)
         expected = d * ((n - 1) + n)
-        assert c.n_params == expected
+        assert c.n_params == expected, f"Expected {expected} params, got {c.n_params}"
 
     def test_vs_vmappable(self):
-        c = variational_simulator(n_qubits=4, depth=2, gate="fsim")
+        c = variational_simulator(n_qubits=4, depth=2)
         f = c.compile()
         rng = np.random.default_rng(7)
         batch = rng.uniform(-math.pi, math.pi, (40, c.n_params)).astype(np.float32)
@@ -216,16 +138,17 @@ class TestVariationalSimulator:
         assert arr.shape == (40,)
         assert np.all(np.isfinite(arr))
 
-    def test_vs_gradient_nonzero(self):
-        c = variational_simulator(n_qubits=4, depth=1, gate="fsim")
+    def test_vs_gradient_finite(self):
+        # H^n + RZZ + RX preserves X^n symmetry -> sum_Z = 0 identically.
+        # Verify gradients are computed correctly (finite), not that they're nonzero.
+        c = variational_simulator(n_qubits=4, depth=1)
         f = c.compile()
-        params = mx.array(
-            np.full(c.n_params, math.pi / 4, dtype=np.float32)
-        )
+        params = mx.array(np.zeros(c.n_params, dtype=np.float32))
         grads = param_shift_gradient(f, params)
         mx.eval(grads)
         arr = np.array(grads.tolist())
-        assert np.max(np.abs(arr)) > 1e-4
+        assert arr.shape == (c.n_params,)
+        assert np.all(np.isfinite(arr))
 
 
 # ---------------------------------------------------------------------------
