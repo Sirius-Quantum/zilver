@@ -108,6 +108,34 @@ class GateOp:
         return cls(gate_fn=_u3, qubits=[qubit], param_indices=[theta_idx, phi_idx, lam_idx])
 
     @classmethod
+    def fsim(cls, qubit_a: int, qubit_b: int, theta_idx: int, phi_idx: int) -> "GateOp":
+        """
+        Fermionic simulation gate — Apple Silicon native.
+        MLX-native construction: sparse structure maps to efficient Metal element-wise ops.
+        theta: swap angle, phi: conditional phase on |11>.
+        """
+        def _fsim(p):
+            theta, phi = p[0], p[1]
+            c   = mx.cos(theta)
+            s   = mx.sin(theta)
+            z   = mx.zeros_like(c)
+            one = mx.ones_like(c)
+            real = mx.stack([
+                mx.stack([one, z,  z,          z]),
+                mx.stack([z,   c,  z,          z]),
+                mx.stack([z,   z,  c,          z]),
+                mx.stack([z,   z,  z, mx.cos(phi)]),
+            ])
+            imag = mx.stack([
+                mx.stack([z,  z,  z,            z]),
+                mx.stack([z,  z, -s,            z]),
+                mx.stack([z, -s,  z,            z]),
+                mx.stack([z,  z,  z, -mx.sin(phi)]),
+            ])
+            return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
+        return cls(gate_fn=_fsim, qubits=[qubit_a, qubit_b], param_indices=[theta_idx, phi_idx])
+
+    @classmethod
     def cnot(cls, control: int, target: int) -> "GateOp":
         return cls.fixed(G.CNOT(), [control, target])
 
@@ -118,6 +146,14 @@ class GateOp:
     @classmethod
     def h(cls, qubit: int) -> "GateOp":
         return cls.fixed(G.H(), [qubit])
+
+    @classmethod
+    def toffoli(cls, control_a: int, control_b: int, target: int) -> "GateOp":
+        return cls.fixed(G.Toffoli(), [control_a, control_b, target])
+
+    @classmethod
+    def fredkin(cls, control: int, target_a: int, target_b: int) -> "GateOp":
+        return cls.fixed(G.Fredkin(), [control, target_a, target_b])
 
 
 class Circuit:
@@ -203,6 +239,19 @@ class Circuit:
         op = GateOp(gate_fn=_rzz, qubits=[qubit_a, qubit_b], param_indices=[param_idx])
         return self.add(op)
 
+    def fsim(self, qubit_a: int, qubit_b: int, theta_idx: int, phi_idx: int) -> "Circuit":
+        """Apple Silicon native fSim gate. theta: swap angle, phi: conditional phase."""
+        self.n_params = max(self.n_params, theta_idx + 1, phi_idx + 1)
+        return self.add(GateOp.fsim(qubit_a, qubit_b, theta_idx, phi_idx))
+
+    def toffoli(self, control_a: int, control_b: int, target: int) -> "Circuit":
+        """Toffoli (CCX) gate: flips target when both controls are |1>."""
+        return self.add(GateOp.toffoli(control_a, control_b, target))
+
+    def fredkin(self, control: int, target_a: int, target_b: int) -> "Circuit":
+        """Fredkin (CSWAP) gate: swaps target_a and target_b when control is |1>."""
+        return self.add(GateOp.fredkin(control, target_a, target_b))
+
     # --- Execution -----------------------------------------------------------
 
     def _run(self, params: mx.array) -> mx.array:
@@ -250,6 +299,59 @@ class Circuit:
                 raise ValueError(f"Unknown observable: {observable}")
 
         return eval_fn
+
+    def fuse(self) -> "Circuit":
+        """
+        Gate fusion pass — the Apple Silicon execution optimization.
+
+        Merges consecutive fixed single-qubit gates on the same qubit into a
+        single matrix multiply. Reduces Metal kernel dispatches proportionally
+        to the number of mergeable gate sequences.
+
+        Example: H → RZ → H on qubit 0 (3 dispatches) → one fused 2x2 matmul.
+
+        Only fuses FIXED (non-parameterized) single-qubit gates. Parameterized
+        gates and multi-qubit gates act as flush boundaries.
+
+        Returns a new Circuit — does not mutate the original.
+        """
+        import numpy as np
+
+        fused = Circuit(self.n_qubits)
+        fused.n_params = self.n_params
+
+        # Pending fixed single-qubit matrices, keyed by qubit index
+        pending: dict[int, np.ndarray] = {}
+
+        def flush(qubit: int) -> None:
+            if qubit in pending:
+                mat = mx.array(pending.pop(qubit))
+                fused._ops.append(GateOp.fixed(mat, [qubit]))
+
+        for op in self._ops:
+            is_fixed_single = (len(op.param_indices) == 0 and len(op.qubits) == 1)
+
+            if is_fixed_single:
+                q = op.qubits[0]
+                gate_np = np.array(op.gate_fn(None).tolist(), dtype=np.complex64)
+                if q in pending:
+                    pending[q] = gate_np @ pending[q]
+                else:
+                    pending[q] = gate_np
+            else:
+                # Flush all qubits involved in this op before appending it
+                for q in op.qubits:
+                    flush(q)
+                fused._ops.append(op)
+
+        for q in list(pending.keys()):
+            flush(q)
+
+        return fused
+
+    def n_ops(self) -> int:
+        """Number of gate operations in the circuit."""
+        return len(self._ops)
 
     def statevector(self, params: mx.array) -> StateVector:
         """Execute and return the full statevector."""
@@ -323,6 +425,51 @@ def efficient_su2(n_qubits: int, depth: int, entanglement: str = "linear") -> Ci
     Same structure as hardware_efficient in this implementation.
     """
     return hardware_efficient(n_qubits, depth, entanglement)
+
+
+def variational_simulator(n_qubits: int, depth: int, gate: str = "fsim") -> Circuit:
+    """
+    Variational quantum simulator ansatz for Hamiltonian simulation.
+
+    Implements a first-order Trotterized transverse-field Ising model:
+        H = -J * sum_i Z_i Z_{i+1}  -  h * sum_i X_i
+
+    Each Trotter layer has:
+        - Ising ZZ coupling: RZZ(2*J*dt) on each nearest-neighbor pair  [or fSim]
+        - Transverse field:  RX(2*h*dt) on each qubit
+
+    Args:
+        gate:  "fsim"  — fSim(theta, phi) per pair (2 params/pair/layer)
+               "rzz"   — RZZ(theta) per pair (1 param/pair/layer), standard Trotter
+
+    Parameter layout (fsim):
+        layer 0: [theta_01, phi_01, theta_12, phi_12, ..., h_0, h_1, ..., h_{n-1}]
+        layer 1: [...same...]
+        Total params: depth * (2*(n-1) + n)  [fsim]  or  depth * ((n-1) + n)  [rzz]
+    """
+    c = Circuit(n_qubits)
+    p = 0
+
+    # Initial Hadamard layer — prepares superposition
+    for q in range(n_qubits):
+        c.h(q)
+
+    for _ in range(depth):
+        # Coupling layer
+        for q in range(n_qubits - 1):
+            if gate == "fsim":
+                c.fsim(q, q + 1, theta_idx=p, phi_idx=p + 1)
+                p += 2
+            else:
+                c.rzz(q, q + 1, param_idx=p)
+                p += 1
+        # Transverse field / mixer layer
+        for q in range(n_qubits):
+            c.rx(q, param_idx=p)
+            p += 1
+
+    c.n_params = p
+    return c
 
 
 def _add_entanglement(c: Circuit, n: int, pattern: str) -> None:

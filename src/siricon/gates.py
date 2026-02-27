@@ -3,12 +3,13 @@ Unitary gate matrices as MLX arrays (complex64).
 
 All single-qubit gates return (2, 2) arrays.
 All two-qubit gates return (4, 4) arrays.
+All three-qubit gates return (8, 8) arrays.
 Parameterized gates are functions: float -> mx.array.
 """
 
 import math
-import mlx.core as mx
 import numpy as np
+import mlx.core as mx
 
 
 # Fixed single-qubit gates
@@ -135,3 +136,57 @@ def RXX(theta: float) -> mx.array:
         [0,  -1j*s,    c,     0],
         [-1j*s,  0,    0,     c],
     ], dtype=mx.complex64)
+
+def fSim(theta: float, phi: float) -> mx.array:
+    """
+    Fermionic simulation gate (Google Sycamore hardware-native).
+
+    Included for cross-platform circuit compatibility — lets Zilver simulate
+    circuits written for Sycamore-class hardware without transpilation.
+
+        [[1,          0,          0,         0],
+         [0,    cos(t),  -i*sin(t),         0],
+         [0,  -i*sin(t),   cos(t),          0],
+         [0,          0,          0,  e^{-i*phi}]]
+
+    Special cases:
+        fSim(pi/2, 0)  = iSWAP
+        fSim(pi/2, pi) = SWAP (up to phase)
+        fSim(0, phi)   = CZ with phase phi
+    """
+    c = math.cos(theta)
+    s = math.sin(theta)
+    e_phi = complex(math.cos(phi), -math.sin(phi))
+    return mx.array([
+        [1,     0,      0,     0],
+        [0,     c,  -1j*s,    0],
+        [0, -1j*s,      c,    0],
+        [0,     0,      0, e_phi],
+    ], dtype=mx.complex64)
+
+
+# Three-qubit gates
+# Qubit convention: qubit 0 = most significant bit
+# Basis: |q0 q1 q2> -> index q0*4 + q1*2 + q2
+
+def Toffoli() -> mx.array:
+    """
+    Toffoli (CCX) gate: flips target qubit (q2) when both controls (q0, q1) are |1>.
+    Standard building block for quantum error correction and fault-tolerant circuits.
+    |110> <-> |111>  (indices 6 <-> 7)
+    """
+    mat = np.eye(8, dtype=np.complex64)
+    mat[6, 6] = 0; mat[6, 7] = 1
+    mat[7, 7] = 0; mat[7, 6] = 1
+    return mx.array(mat)
+
+def Fredkin() -> mx.array:
+    """
+    Fredkin (CSWAP) gate: swaps q1 and q2 when control q0 is |1>.
+    Used in quantum error correction and reversible computing.
+    |101> <-> |110>  (indices 5 <-> 6)
+    """
+    mat = np.eye(8, dtype=np.complex64)
+    mat[5, 5] = 0; mat[5, 6] = 1
+    mat[6, 6] = 0; mat[6, 5] = 1
+    return mx.array(mat)
