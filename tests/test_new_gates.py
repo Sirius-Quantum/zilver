@@ -121,10 +121,10 @@ class TestVariationalSimulator:
         assert -4.1 <= result <= 4.1
 
     def test_vs_param_count(self):
-        # depth * ((n-1) + n) for rzz
+        # depth * (n + (n-1)) per layer: n RX + (n-1) RZZ
         n, d = 6, 3
         c = variational_simulator(n, d)
-        expected = d * ((n - 1) + n)
+        expected = d * (n + (n - 1))
         assert c.n_params == expected, f"Expected {expected} params, got {c.n_params}"
 
     def test_vs_vmappable(self):
@@ -138,17 +138,17 @@ class TestVariationalSimulator:
         assert arr.shape == (40,)
         assert np.all(np.isfinite(arr))
 
-    def test_vs_gradient_finite(self):
-        # H^n + RZZ + RX preserves X^n symmetry -> sum_Z = 0 identically.
-        # Verify gradients are computed correctly (finite), not that they're nonzero.
+    def test_vs_gradient_nonzero(self):
         c = variational_simulator(n_qubits=4, depth=1)
         f = c.compile()
-        params = mx.array(np.zeros(c.n_params, dtype=np.float32))
+        rng = np.random.default_rng(42)
+        params = mx.array(
+            rng.uniform(-math.pi, math.pi, c.n_params).astype(np.float32)
+        )
         grads = param_shift_gradient(f, params)
         mx.eval(grads)
         arr = np.array(grads.tolist())
-        assert arr.shape == (c.n_params,)
-        assert np.all(np.isfinite(arr))
+        assert np.max(np.abs(arr)) > 1e-4
 
 
 # ---------------------------------------------------------------------------

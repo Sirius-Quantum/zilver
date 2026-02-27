@@ -401,26 +401,26 @@ def variational_simulator(n_qubits: int, depth: int) -> Circuit:
     Implements a first-order Trotterized transverse-field Ising model:
         H = -J * sum_i Z_i Z_{i+1}  -  h * sum_i X_i
 
-    Each Trotter layer:
+    Starts from |0>^n. Each Trotter layer:
+        - Transverse field:  RX(h) on each qubit   (creates superposition, breaks symmetry)
         - Ising ZZ coupling: RZZ(theta) on each nearest-neighbor pair
-        - Transverse field:  RX(h) on each qubit
+
+    Layer order (RX before RZZ) ensures the state is not in an X^n eigenspace,
+    so sum_Z is non-trivially zero and gradients are nonzero at generic parameters.
 
     Parameter layout:
-        layer 0: [theta_01, theta_12, ..., h_0, h_1, ..., h_{n-1}]
-        Total params: depth * ((n-1) + n)
+        layer 0: [h_0, h_1, ..., h_{n-1}, theta_01, theta_12, ...]
+        Total params: depth * (n + (n-1))
     """
     c = Circuit(n_qubits)
     p = 0
 
-    for q in range(n_qubits):
-        c.h(q)
-
     for _ in range(depth):
-        for q in range(n_qubits - 1):
-            c.rzz(q, q + 1, param_idx=p)
-            p += 1
         for q in range(n_qubits):
             c.rx(q, param_idx=p)
+            p += 1
+        for q in range(n_qubits - 1):
+            c.rzz(q, q + 1, param_idx=p)
             p += 1
 
     c.n_params = p
