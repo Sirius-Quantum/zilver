@@ -137,34 +137,6 @@ def RXX(theta: float) -> mx.array:
         [-1j*s,  0,    0,     c],
     ], dtype=mx.complex64)
 
-def fSim(theta: float, phi: float) -> mx.array:
-    """
-    Fermionic simulation gate (Google Sycamore hardware-native).
-
-    Included for cross-platform circuit compatibility — lets Zilver simulate
-    circuits written for Sycamore-class hardware without transpilation.
-
-        [[1,          0,          0,         0],
-         [0,    cos(t),  -i*sin(t),         0],
-         [0,  -i*sin(t),   cos(t),          0],
-         [0,          0,          0,  e^{-i*phi}]]
-
-    Special cases:
-        fSim(pi/2, 0)  = iSWAP
-        fSim(pi/2, pi) = SWAP (up to phase)
-        fSim(0, phi)   = CZ with phase phi
-    """
-    c = math.cos(theta)
-    s = math.sin(theta)
-    e_phi = complex(math.cos(phi), -math.sin(phi))
-    return mx.array([
-        [1,     0,      0,     0],
-        [0,     c,  -1j*s,    0],
-        [0, -1j*s,      c,    0],
-        [0,     0,      0, e_phi],
-    ], dtype=mx.complex64)
-
-
 # Three-qubit gates
 # Qubit convention: qubit 0 = most significant bit
 # Basis: |q0 q1 q2> -> index q0*4 + q1*2 + q2
