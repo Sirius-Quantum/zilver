@@ -1,14 +1,4 @@
-"""
-Gradient computation via the parameter shift rule.
-
-The parameter shift rule for a gate G(theta) = exp(-i theta/2 * P) where P is
-a Pauli operator gives exact gradients:
-    df/d(theta_k) = 0.5 * [f(theta_k + pi/2) - f(theta_k - pi/2)]
-
-Key optimization for Sirius: all 2*P shifted evaluations for a full gradient
-are batched into a single mx.vmap call, dispatching one Metal kernel instead
-of 2*P sequential calls.
-"""
+"""Parameter shift gradients."""
 
 from __future__ import annotations
 from typing import Callable
