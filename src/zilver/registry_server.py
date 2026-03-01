@@ -1,42 +1,4 @@
-"""
-Registry HTTP server.
-
-Exposes the in-process :class:`~zilver.registry.Registry` over HTTP so that
-nodes on different machines can register, send heartbeats, and be discovered
-by coordinators without any shared memory or direct imports.
-
-Design
-------
-The registry is intentionally in-memory for v1.  Every registered node
-carries its advertised URL (``http://host:port``) alongside its capabilities,
-so a coordinator that calls ``GET /match`` receives a connectable address,
-not just a node ID.  Persistent storage (SQLite, Redis) is deferred to a
-future release.
-
-Node URL storage
-----------------
-FastAPI stores the URL-to-node mapping in a module-level dict keyed by
-``node_id``.  This is safe for the single-process case; the distributed
-registry service is designed to run as a single process in v1.
-
-Endpoints
----------
-POST   /nodes                          Register or re-register a node.
-DELETE /nodes/{node_id}                Mark a node offline.
-POST   /nodes/{node_id}/heartbeat      Refresh last-seen timestamp.
-GET    /nodes                          List all online nodes with URLs.
-GET    /match                          Best node for a job (returns URL).
-GET    /summary                        Aggregate registry statistics.
-
-Example
--------
-::
-
-    from zilver.registry_server import make_registry_app, serve_registry
-
-    app = make_registry_app()           # fresh in-memory registry
-    serve_registry(host="0.0.0.0", port=7701)   # blocks until Ctrl-C
-"""
+"""Registry HTTP server."""
 
 from __future__ import annotations
 
