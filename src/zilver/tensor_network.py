@@ -1,23 +1,4 @@
-"""
-Matrix Product State (MPS) tensor network simulator.
-
-Scales with entanglement entropy, not qubit count.
-Target: 50+ qubits for circuits with bond dimension chi <= 256.
-
-Qubit convention: qubit 0 = most significant bit.
-Tensor shape: tensors[k] has shape (chi_left, 2, chi_right).
-  - chi_left  = 1 at left boundary (k=0)
-  - chi_right = 1 at right boundary (k=n-1)
-  - physical dimension = 2 (qubit)
-
-Two-qubit gates must act on adjacent qubits in the MPS ordering.
-Non-adjacent gates are handled automatically via SWAP decomposition.
-
-Note: SVD truncation makes MPS circuits approximate for chi < chi_exact.
-      For exact simulation (chi_max=None), results match statevector exactly.
-      SVD is not vmappable — batched VQA evaluation uses sequential evaluation
-      or distribution across nodes.
-"""
+"""MPS tensor network simulation."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
