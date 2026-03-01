@@ -1,29 +1,4 @@
-"""
-Circuit cutting via quasi-probability decomposition (QPD).
-
-Splits a circuit that exceeds single-device memory into subcircuits that each
-fit on one simulator node. Classical post-processing in coordinator.py
-recombines results.
-
-Two cutting strategies:
-  - Wire cutting:  replace a qubit wire crossing a partition boundary with
-                   classical communication. Overhead: O(4^k) for k cuts.
-  - Gate cutting:  replace a two-qubit gate spanning the boundary with a sum
-                   of local single-qubit operations. Overhead: O(9^k) for k cuts.
-
-QPD identity for wire cutting (Pauli channel decomposition):
-  I(rho) = Σ_{i=0}^{3} c_i P_i rho P_i†
-  where P_i ∈ {I, X, Y, Z}, c = [+1/2, +1/2, -1/2, +1/2]
-
-  Each term becomes a (preparation, measurement basis) pair. The left
-  subcircuit prepares a state; the right subcircuit measures in a Pauli basis.
-  Classical weights c_i (some negative) are applied during recombination.
-
-QPD decomposition for CNOT gate cutting (Mitarai et al.):
-  CNOT = Σ_{i=0}^{7} c_i  L_i ⊗ R_i
-  where {L_i, R_i} are single-qubit operations and c_i are real weights.
-  8 terms, some with negative coefficients.
-"""
+"""Circuit cutting (QPD)."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
