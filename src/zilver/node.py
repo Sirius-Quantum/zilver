@@ -1,19 +1,4 @@
-"""
-Zilver node daemon.
-
-Each Apple Silicon device runs a node that:
-  - Detects local hardware capabilities (chip, RAM, qubit ceiling)
-  - Executes simulation jobs locally via MLX
-  - Returns results with a deterministic job proof for verification
-  - (Future) Registers with the capability registry and listens on P2P bus
-
-Entry point: zilver-node start --backends sv,dm --wallet <addr>
-
-Job routing:
-  sv  — statevector (simulator.py),  up to 32-34 qubits
-  dm  — density matrix (density_matrix.py), up to 16-17 qubits
-  tn  — tensor network (tensor_network.py), up to 50+ qubits (sparse)
-"""
+"""Simulation node."""
 
 from __future__ import annotations
 import hashlib
