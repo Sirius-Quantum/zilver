@@ -1,42 +1,4 @@
-"""
-Node HTTP server.
-
-Exposes a Zilver simulation node over HTTP so that coordinators and clients
-on other machines can submit jobs and retrieve results without any shared memory.
-
-Architecture note
------------------
-``make_app`` returns a plain FastAPI application instance.  Separating app
-construction from server startup means tests can drive the endpoints through
-``fastapi.testclient.TestClient`` without binding a real port.
-
-Thread-pool execution
----------------------
-MLX statevector simulation is CPU-bound (Metal dispatch + result copy).
-Running it directly inside an ``async def`` endpoint would block the event
-loop and stall concurrent health/heartbeat requests during a long computation.
-Every ``/execute`` call is therefore dispatched to
-``asyncio.get_event_loop().run_in_executor(None, node.execute, job)``, which
-hands the work to a thread from the default ``ThreadPoolExecutor`` and
-suspends the coroutine until it completes.
-
-Endpoints
----------
-POST /execute      SimJob JSON  →  JobResult JSON (422 on capacity/backend error)
-GET  /caps         NodeCapabilities JSON
-POST /heartbeat    {"status": "ok"}
-GET  /health       {"status": "ok", "node_id": "<id>"}
-
-Example
--------
-::
-
-    from zilver.node import Node
-    from zilver.server import make_app, serve
-
-    node = Node.start(backends=["sv", "dm"])
-    serve(node, host="0.0.0.0", port=7700)   # blocks until Ctrl-C
-"""
+"""Node HTTP server."""
 
 from __future__ import annotations
 
