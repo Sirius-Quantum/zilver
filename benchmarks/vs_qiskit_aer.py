@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-Zilver vs Qiskit Aer: head-to-head landscape generation benchmark.
-
-Measures wall time for a 20x20 loss + gradient landscape on the four
-Sirius circuit families at n_qubits = 6, 8, 10, 12.
-
-Usage:
-    python benchmarks/vs_qiskit_aer.py
-    python benchmarks/vs_qiskit_aer.py --qubits 8 --depth 4 --resolution 20
-"""
+"""Zilver vs Qiskit Aer benchmark."""
 
 import argparse
 import time
