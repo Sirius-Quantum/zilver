@@ -1,41 +1,4 @@
-"""
-HTTP clients for the Zilver distributed network.
-
-Provides three classes:
-
-``NodeClient``
-    Submits simulation jobs to a remote node server (``server.py``).
-    Wraps ``POST /execute``, ``GET /caps``, and ``GET /health``.
-
-``RegistryClient``
-    Manages node registration and discovery against a registry server
-    (``registry_server.py``).  Used by the node daemon for self-registration
-    and by ``NetworkCoordinator`` for node lookup.
-
-``NetworkCoordinator``
-    High-level entry point for user code.  Resolves the best available node
-    via the registry, submits a job, and returns the result — all in one call.
-    Also supports batch evaluation (a parameter grid spread across nodes).
-
-All clients use synchronous ``httpx`` for simplicity.  A future async layer
-can be added without changing the server interface.
-
-Example
--------
-::
-
-    from zilver.client import NetworkCoordinator
-    from zilver.node import SimJob
-
-    coord = NetworkCoordinator("http://registry-host:7701")
-    job = SimJob(
-        circuit_ops=[{"type": "h", "qubits": [0], "param_idx": None}],
-        n_qubits=4, n_params=0, params=[], backend="sv",
-    )
-    result = coord.submit(job)
-    print(result.expectation)   # finite float
-    assert result.verify(job)   # SHA-256 proof check
-"""
+"""HTTP clients."""
 
 from __future__ import annotations
 
