@@ -2,7 +2,7 @@
 
 **Open quantum simulation network for Apple Silicon.**
 
-Every Mac with Apple Silicon is a quantum computer waiting to be used. Zilver turns your MacBook, Mac Mini, Mac Studio, or Mac Pro into a node on a distributed quantum simulation network — contributing GPU compute via Metal, earning rewards, and advancing open quantum science.
+Every Mac with Apple Silicon is a quantum computer waiting to be used. Zilver turns your MacBook, Mac Mini, Mac Studio, or Mac Pro into a node on a distributed quantum simulation network contributing GPU compute via Metal, earning rewards, and advancing open quantum science.
 
 Built on [MLX](https://github.com/ml-explore/mlx). Statevector, density matrix, and tensor network backends. Fully open source under Apache 2.0.
 
@@ -20,7 +20,7 @@ zilver-node start --registry http://<registry-ip>:7701
 
 Your node auto-detects chip, RAM, and qubit ceiling. It registers, starts serving simulation jobs, and sends heartbeats every 30 seconds. That is it.
 
-Early node operators will receive priority allocation of Sirius Quantum network rewards when the incentive layer launches. The simulation network is live now — rewards are retroactive to genesis nodes.
+Early node operators will receive priority allocation of Sirius Quantum network rewards when the incentive layer launches. The simulation network is live now rewards are retroactive to genesis nodes.
 
 ---
 
@@ -46,7 +46,7 @@ SV = statevector (exact). DM = density matrix (noise-aware). TN = tensor network
 
 **Local simulation**
 
-MLX-native simulator with full `mx.vmap` and `mx.compile` support. One Metal dispatch evaluates an entire loss landscape — 400 parameter points in a single GPU kernel instead of 400 sequential circuit runs.
+MLX-native simulator with full `mx.vmap` and `mx.compile` support. One Metal dispatch evaluates an entire loss landscape 400 parameter points in a single GPU kernel instead of 400 sequential circuit runs.
 
 ```python
 from zilver.circuit import hardware_efficient
@@ -76,7 +76,7 @@ job = SimJob(
 )
 result = coord.submit(job)
 print(result.expectation)
-print(result.verify(job))   # True — cryptographic proof check
+print(result.verify(job))   # True cryptographic proof check
 ```
 
 **Gradient computation**
@@ -114,14 +114,14 @@ Requirements: Apple Silicon Mac, macOS 13 Ventura or later, Python 3.10+.
 
 | Gate | Type | Params |
 |---|---|---|
-| H, X, Y, Z, S, T | Fixed single-qubit | — |
+| H, X, Y, Z, S, T | Fixed single-qubit | |
 | RX, RY, RZ | Rotation | 1 |
 | U3 | Universal single-qubit | 3 (theta, phi, lambda) |
-| CNOT, CZ, SWAP, iSWAP | Fixed two-qubit | — |
+| CNOT, CZ, SWAP, iSWAP | Fixed two-qubit | |
 | RZZ, RXX | Ising coupling | 1 |
 | CRZ | Controlled rotation | 1 |
 
-All parameterized gates are MLX-native — compatible with `mx.vmap` and `mx.compile`.
+All parameterized gates are MLX-native compatible with `mx.vmap` and `mx.compile`.
 
 ---
 
