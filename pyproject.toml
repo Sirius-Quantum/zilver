@@ -5,23 +5,32 @@ build-backend = "hatchling.build"
 [project]
 name = "zilver"
 version = "0.1.0"
-description = "MLX-native statevector quantum circuit simulator for Apple Silicon"
+description = "Open quantum simulation network for Apple Silicon — join the Sirius Quantum network and contribute compute"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-keywords = ["quantum computing", "simulation", "apple silicon", "mlx", "barren plateau", "variational quantum algorithms"]
+keywords = ["quantum computing", "simulation", "apple silicon", "mlx", "distributed", "network", "barren plateau", "variational quantum algorithms"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: System :: Distributed Computing",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
+
 dependencies = [
     "mlx>=0.18.0",
     "numpy>=1.24.0",
 ]
+
+[project.urls]
+Homepage  = "https://github.com/sirius-quantum/zilver"
+Repository = "https://github.com/sirius-quantum/zilver"
+Issues    = "https://github.com/sirius-quantum/zilver/issues"
+Manifesto = "https://github.com/sirius-quantum/zilver/blob/main/MANIFESTO.md"
 
 [project.optional-dependencies]
 dev     = ["pytest>=7.4", "pytest-benchmark>=4.0"]

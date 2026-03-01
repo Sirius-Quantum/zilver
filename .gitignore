@@ -55,3 +55,4 @@ results/
 *.swp
 *.swo
 docs/
+test_network.py

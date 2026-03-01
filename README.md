@@ -1,32 +1,52 @@
 # Zilver
 
-MLX-native statevector quantum circuit simulator for Apple Silicon.
+**Open quantum simulation network for Apple Silicon.**
 
-Built to replace sequential Qiskit Aer calls with a single batched Metal dispatch — every point on a 20×20 loss landscape evaluated in one GPU kernel instead of 2000 sequential circuit executions.
+Every Mac with Apple Silicon is a quantum computer waiting to be used. Zilver turns your MacBook, Mac Mini, Mac Studio, or Mac Pro into a node on a distributed quantum simulation network — contributing GPU compute via Metal, earning rewards, and advancing open quantum science.
 
----
-
-## Requirements
-
-- Apple Silicon Mac (M1 / M2 / M3 / M4 — MacBook, Mac Mini, Mac Studio, Mac Pro)
-- macOS 13 Ventura or later
-- Python 3.10+
+Built on [MLX](https://github.com/ml-explore/mlx). Statevector, density matrix, and tensor network backends. Fully open source under Apache 2.0.
 
 ---
 
-## Install
+## Join the network
+
+Three commands to become a node operator:
 
 ```bash
-git clone https://github.com/deryakarl/zilver
-cd zilver
-bash scripts/setup.sh
+pip install zilver[network]
+zilver-registry start --port 7701 &        # run once on one machine as the registry host
+zilver-node start --registry http://<registry-ip>:7701
 ```
 
-The setup script verifies Apple Silicon, installs dependencies, confirms Metal is active, installs the pre-commit guard hook, and runs the test suite.
+Your node auto-detects chip, RAM, and qubit ceiling. It registers, starts serving simulation jobs, and sends heartbeats every 30 seconds. That is it.
+
+Early node operators will receive priority allocation of Sirius Quantum network rewards when the incentive layer launches. The simulation network is live now — rewards are retroactive to genesis nodes.
 
 ---
 
-## Quick start
+## Hardware
+
+Every Apple Silicon chip is supported. Qubit ceiling scales with unified memory.
+
+| Chip | RAM | SV qubits | DM qubits | TN qubits |
+|---|---|---|---|---|
+| M1 | 8 GB | 28 | 14 | 50 |
+| M1 / M2 | 16 GB | 30 | 15 | 50 |
+| M1 Pro / M2 Pro | 32 GB | 31 | 15 | 50 |
+| M1 Max / M2 Max | 64 GB | 32 | 16 | 50 |
+| M1 Ultra / M2 Ultra | 128 GB | 33 | 16 | 50 |
+| M3 / M4 | 16–24 GB | 30–31 | 15 | 50 |
+| M3 Max / M4 Max | 64–128 GB | 32–33 | 16 | 50 |
+
+SV = statevector (exact). DM = density matrix (noise-aware). TN = tensor network / MPS (sparse circuits, scales to 50+ qubits regardless of RAM).
+
+---
+
+## What Zilver does
+
+**Local simulation**
+
+MLX-native simulator with full `mx.vmap` and `mx.compile` support. One Metal dispatch evaluates an entire loss landscape — 400 parameter points in a single GPU kernel instead of 400 sequential circuit runs.
 
 ```python
 from zilver.circuit import hardware_efficient
@@ -40,52 +60,53 @@ print(f"Trainability score: {result.trainability_score():.3f}")
 print(f"Wall time:          {result.wall_time_seconds:.3f}s")
 ```
 
----
+**Distributed network**
 
-## Core concepts
+Submit jobs to any registered node. The coordinator finds an eligible node, dispatches the job, and returns a verified result with a cryptographic proof.
 
-**Circuit families**
 ```python
-from zilver.circuit import hardware_efficient, real_amplitudes, qaoa_style, efficient_su2
+from zilver.client import NetworkCoordinator
+from zilver.node import SimJob
 
-c = hardware_efficient(n_qubits=8, depth=4)
-c = real_amplitudes(n_qubits=6, depth=3)
-c = qaoa_style(n_qubits=6, depth=4)        # QAOA: 2*depth params
-```
+coord = NetworkCoordinator("http://<registry-ip>:7701")
 
-**Universal single-qubit gate**
-```python
-from zilver.circuit import Circuit
-
-c = Circuit(n_qubits=2)
-c.u3(qubit=0, theta_idx=0, phi_idx=1, lam_idx=2)  # any SU(2)
-c.cnot(0, 1)
-```
-
-**Batched evaluation via vmap**
-```python
-import mlx.core as mx
-import numpy as np
-
-f = circuit.compile(observable="sum_z")
-
-# 400 parameter vectors evaluated in one Metal dispatch
-params_grid = mx.array(np.random.uniform(-np.pi, np.pi, (400, circuit.n_params)).astype(np.float32))
-losses = mx.vmap(f)(params_grid)
-mx.eval(losses)
+job = SimJob(
+    circuit_ops=[{"type": "ry", "qubits": [0], "param_idx": 0}],
+    n_qubits=4, n_params=1, params=[1.57], backend="sv",
+)
+result = coord.submit(job)
+print(result.expectation)
+print(result.verify(job))   # True — cryptographic proof check
 ```
 
 **Gradient computation**
+
+Parameter-shift gradients, fully batched over parameter vectors. Plug directly into any VQA optimizer.
+
 ```python
-from zilver.gradients import param_shift_gradient, gradient_variance
+from zilver.gradients import param_shift_gradient
 
-# Full gradient vector (2P evaluations, batched)
+f = circuit.compile(observable="sum_z")
 grads = param_shift_gradient(f, params)
-
-# Barren plateau detection: gradient variance across random samples
-stats = gradient_variance(f, circuit.n_params, n_samples=200)
-print(stats["variance_per_param"])   # low variance = barren plateau
 ```
+
+---
+
+## Install
+
+**Simulator only**
+
+```bash
+pip install zilver
+```
+
+**Full network node**
+
+```bash
+pip install zilver[network]
+```
+
+Requirements: Apple Silicon Mac, macOS 13 Ventura or later, Python 3.10+.
 
 ---
 
@@ -100,32 +121,31 @@ print(stats["variance_per_param"])   # low variance = barren plateau
 | RZZ, RXX | Ising coupling | 1 |
 | CRZ | Controlled rotation | 1 |
 
-All parameterized gates are MLX-native — fully compatible with `mx.vmap` and `mx.compile`.
+All parameterized gates are MLX-native — compatible with `mx.vmap` and `mx.compile`.
 
 ---
 
 ## Development
 
 ```bash
-make test          # run test suite (81 tests)
-make bench         # benchmark vs Qiskit Aer
-make guard         # scan repo for secrets / internal references
-make install-hooks # (re)install pre-commit hook
-```
-
----
-
-## Security
-
-A pre-commit guard runs on every commit and blocks: API keys, tokens, passwords, private key material, database connection strings, files over 500 KB, and internal path references.
-
-Run a full scan anytime:
-```bash
-python scripts/guard.py --all
+git clone https://github.com/deryakarl/zilver
+cd zilver
+pip install -e ".[dev,network]"
+pytest tests/   # 464 tests
 ```
 
 ---
 
 ## License
 
-Apache 2.0
+Apache 2.0. See [LICENSE](LICENSE).
+
+The simulation and network layer are fully open source. Trademarks "Sirius Quantum" and "Zilver" are reserved. The incentive and settlement layer is proprietary.
+
+---
+
+## Manifesto
+
+We believe quantum compute should be open, distributed, and owned by the people who run it.
+
+[Read the Sirius Quantum Manifesto](MANIFESTO.md)

@@ -182,7 +182,7 @@ def landscape_from_qasm(
 ) -> LandscapeResult:
     """
     Convenience function: parse a QASM string and compute the landscape.
-    Convenience function: parse a QASM string and compute the loss landscape.
+    Bridges the QASM circuits into Zilver.
     """
     from .qasm_bridge import circuit_from_qasm
     circuit = circuit_from_qasm(qasm_str)
