@@ -1,22 +1,4 @@
-"""
-Batch distributor: split parameter grids across nodes for vmap evaluation.
-
-VQA training and landscape sampling require evaluating E(θ) at many
-parameter points. The batch distributor partitions a (N, n_params)
-parameter grid across available nodes. Each node runs mx.vmap on its
-slice, saturating Metal throughput. Results are reassembled in order.
-
-Two execution paths:
-  run_local_batch()    — single vmap dispatch on the current device
-  BatchDistributor     — registry-routed slices dispatched to node pool
-
-For cut circuits use run_cut_local_batch() and CutBatchDistributor.
-
-Slice assignment:
-  Slices are distributed round-robin across k eligible nodes, ordered by
-  (jobs_in_flight ASC, stake DESC) as returned by Registry.match_all().
-  Each node receives ceil(N/k) or floor(N/k) parameter sets.
-"""
+"""Batch job distributor."""
 
 from __future__ import annotations
 import time
