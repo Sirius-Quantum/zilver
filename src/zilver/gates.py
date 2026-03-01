@@ -15,41 +15,51 @@ import mlx.core as mx
 # Fixed single-qubit gates
 
 def I() -> mx.array:
+    """Identity gate."""
     return mx.array([[1, 0], [0, 1]], dtype=mx.complex64)
 
 def X() -> mx.array:
+    """Pauli-X (bit-flip) gate."""
     return mx.array([[0, 1], [1, 0]], dtype=mx.complex64)
 
 def Y() -> mx.array:
+    """Pauli-Y gate."""
     return mx.array([[0, -1j], [1j, 0]], dtype=mx.complex64)
 
 def Z() -> mx.array:
+    """Pauli-Z (phase-flip) gate."""
     return mx.array([[1, 0], [0, -1]], dtype=mx.complex64)
 
 def H() -> mx.array:
+    """Hadamard gate. Maps |0> -> |+>, |1> -> |->."""
     s = 1.0 / math.sqrt(2)
     return mx.array([[s, s], [s, -s]], dtype=mx.complex64)
 
 def S() -> mx.array:
+    """Phase gate (sqrt of Z). Applies a pi/2 phase to |1>."""
     return mx.array([[1, 0], [0, 1j]], dtype=mx.complex64)
 
 def T() -> mx.array:
+    """T gate (fourth root of Z). Applies a pi/4 phase to |1>."""
     return mx.array([[1, 0], [0, complex(math.cos(math.pi/4), math.sin(math.pi/4))]], dtype=mx.complex64)
 
 
 # Parameterized single-qubit rotations
 
 def RX(theta: float) -> mx.array:
+    """Rotation about the X axis by angle theta: exp(-i theta/2 X)."""
     c = math.cos(theta / 2)
     s = math.sin(theta / 2)
     return mx.array([[c, -1j * s], [-1j * s, c]], dtype=mx.complex64)
 
 def RY(theta: float) -> mx.array:
+    """Rotation about the Y axis by angle theta: exp(-i theta/2 Y)."""
     c = math.cos(theta / 2)
     s = math.sin(theta / 2)
     return mx.array([[c, -s], [s, c]], dtype=mx.complex64)
 
 def RZ(theta: float) -> mx.array:
+    """Rotation about the Z axis by angle theta: exp(-i theta/2 Z)."""
     e_neg = complex(math.cos(theta / 2), -math.sin(theta / 2))
     e_pos = complex(math.cos(theta / 2),  math.sin(theta / 2))
     return mx.array([[e_neg, 0], [0, e_pos]], dtype=mx.complex64)
@@ -71,6 +81,7 @@ def U(theta: float, phi: float, lam: float) -> mx.array:
 # Fixed two-qubit gates
 
 def CNOT() -> mx.array:
+    """Controlled-NOT gate. Flips target qubit when control is |1>."""
     return mx.array([
         [1, 0, 0, 0],
         [0, 1, 0, 0],
@@ -79,6 +90,7 @@ def CNOT() -> mx.array:
     ], dtype=mx.complex64)
 
 def CZ() -> mx.array:
+    """Controlled-Z gate. Applies a Z phase to target when control is |1>."""
     return mx.array([
         [1, 0, 0,  0],
         [0, 1, 0,  0],
@@ -87,6 +99,7 @@ def CZ() -> mx.array:
     ], dtype=mx.complex64)
 
 def SWAP() -> mx.array:
+    """SWAP gate. Exchanges the states of two qubits."""
     return mx.array([
         [1, 0, 0, 0],
         [0, 0, 1, 0],
@@ -95,6 +108,7 @@ def SWAP() -> mx.array:
     ], dtype=mx.complex64)
 
 def iSWAP() -> mx.array:
+    """iSWAP gate. Swaps two qubits and applies an i phase to the swapped amplitudes."""
     return mx.array([
         [1,  0,  0, 0],
         [0,  0, 1j, 0],
