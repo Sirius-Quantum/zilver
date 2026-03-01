@@ -1,5 +1,7 @@
 # Zilver
 
+[![PyPI version](https://img.shields.io/pypi/v/zilver.svg)](https://pypi.org/project/zilver/)
+
 **Open quantum simulation network for Apple Silicon.**
 
 Every Mac with Apple Silicon is a quantum computer waiting to be used. Zilver turns your MacBook, Mac Mini, Mac Studio, or Mac Pro into a node on a distributed quantum simulation network contributing GPU compute via Metal, earning rewards, and advancing open quantum science.
