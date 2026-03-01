@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-VQA optimization with parameter-shift gradients on Apple Silicon.
-
-Minimizes the expectation value <Z_0> of a hardware-efficient ansatz
-using gradient descent with parameter-shift rule gradients — all
-evaluated in batched Metal dispatches via MLX.
-"""
+"""VQA gradient descent example."""
 
 import sys
 import math

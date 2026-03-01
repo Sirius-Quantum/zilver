@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-Distributed job submission over the Zilver network.
-
-Requires a running registry and at least one node:
-
-    zilver-registry start --port 7701 &
-    zilver-node start --backends sv,dm --port 7700 --registry http://localhost:7701
-
-Then run this script:
-
-    python examples/network_submit.py
-"""
+"""Network job submission example."""
 
 import sys
 import math

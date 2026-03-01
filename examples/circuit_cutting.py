@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""
-Circuit cutting via quasi-probability decomposition (QPD).
-
-Demonstrates wire cutting: a large circuit is split at a designated wire cut,
-each fragment evaluated independently on separate nodes (or locally), and the
-results recombined via QPD coefficients to recover the full expectation value.
-
-This enables circuits that exceed a single node's qubit ceiling to be evaluated
-across the network. A 12-qubit circuit split into two 6-qubit fragments can run
-on two M1 Macs with 8 GB RAM.
-"""
+"""Circuit cutting (QPD) example."""
 
 import sys
 import numpy as np

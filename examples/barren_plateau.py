@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-Barren plateau detection demo using Zilver.
-
-Demonstrates the key use case: detecting vanishing gradients in deep
-VQA circuits by comparing gradient variance across depths on Apple Silicon.
-"""
+"""Barren plateau detection example."""
 
 import math
 import numpy as np
