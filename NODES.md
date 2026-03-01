@@ -1,6 +1,6 @@
 # Node Operator Guide
 
-Everything you need to run a Zilver simulation node on your Apple Silicon Mac.
+Run a Zilver simulation node on your Apple Silicon Mac.
 
 ---
 
