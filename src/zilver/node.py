@@ -198,6 +198,12 @@ class JobResult:
 
 
 def _compute_proof(job_id: str, params: list[float], expectation: float) -> str:
+    """Compute a SHA-256 proof for a job result.
+
+    Serialises job_id, params, and expectation (rounded to 8 d.p.) as a
+    deterministic JSON string and returns its hex digest. Used by
+    JobResult.verify() to confirm the node computed the correct result.
+    """
     payload = json.dumps({
         "job_id":     job_id,
         "params":     params,
