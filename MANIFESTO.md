@@ -1,4 +1,4 @@
-# Quantum Manifesto v1.0.3
+# Sirius Quantum Manifesto
 
 **Sirius Quantum** — Established 2021
 
