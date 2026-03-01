@@ -1,9 +1,4 @@
-"""
-Core statevector operations on Apple Silicon via MLX.
-
-State convention: qubit 0 is the most significant bit.
-Shape: (2**n_qubits,) complex64.
-"""
+"""Statevector simulation."""
 
 from __future__ import annotations
 from typing import Sequence
