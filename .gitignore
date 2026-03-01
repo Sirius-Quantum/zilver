@@ -27,7 +27,7 @@ config.local.*
 *.p12
 *.pfx
 
-# Benchmark data & outputs (internal Sirius datasets stay out)
+# Benchmark data and outputs
 *.json
 !pyproject.toml
 benchmark_output/
