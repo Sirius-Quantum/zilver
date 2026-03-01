@@ -1,11 +1,4 @@
-"""
-Unitary gate matrices as MLX arrays (complex64).
-
-All single-qubit gates return (2, 2) arrays.
-All two-qubit gates return (4, 4) arrays.
-All three-qubit gates return (8, 8) arrays.
-Parameterized gates are functions: float -> mx.array.
-"""
+"""Gate matrices."""
 
 import math
 import numpy as np
