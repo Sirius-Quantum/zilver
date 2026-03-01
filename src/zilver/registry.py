@@ -1,21 +1,4 @@
-"""
-Capability registry: node discovery and job matchmaking.
-
-Nodes register their hardware capabilities on startup. The registry
-maintains a live view of available nodes and routes incoming jobs to
-eligible nodes based on backend, qubit count, and load.
-
-In the distributed network this runs as a shared service (or is
-replicated across DHT nodes). Here it is an in-process registry
-usable for local multi-node simulation and as the interface contract
-for the future P2P layer.
-
-Matchmaking policy (in priority order):
-  1. Backend must be supported by the node
-  2. Qubit count must not exceed the node's ceiling
-  3. Among eligible nodes, prefer lowest jobs_in_flight (load balancing)
-  4. Break ties by stake (higher stake = more trusted node)
-"""
+"""Node registry."""
 
 from __future__ import annotations
 import time
