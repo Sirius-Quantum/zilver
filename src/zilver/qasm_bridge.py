@@ -70,6 +70,7 @@ def circuit_from_qasm(qasm_str: str) -> Circuit:
 
 
 def _parse_n_qubits(lines: list[str]) -> int:
+    """Extract the qubit count from a ``qreg`` declaration line."""
     for line in lines:
         m = re.match(r"qreg\s+\w+\[(\d+)\]", line)
         if m:
@@ -83,6 +84,12 @@ def _parse_gate_line(
     param_registry: dict[str, int],
     n_qubits: int,
 ) -> None:
+    """Parse one QASM gate statement and append the corresponding op to circuit.
+
+    Handles fixed single-qubit gates, fixed two-qubit gates, and parameterized
+    single-qubit rotations (rx/ry/rz). Unrecognised gate names are silently
+    skipped, matching standard QASM parser behaviour for custom gate defs.
+    """
     # Match: gate_name[(param,...)] qubit[i](, qubit[j])*;
     m = re.match(r"(\w+)(?:\(([^)]*)\))?\s+(.+);", line)
     if not m:
