@@ -1,27 +1,4 @@
-"""
-Coordinator: result recombination for circuit cutting.
-
-Takes subcircuit evaluation results from a CutDecomposition and applies
-quasi-probability weights to recover the full-circuit expectation value.
-
-For a single wire cut with k=1:
-  E_full = Σ_{i=0}^{3} w_i * f(left_i, right_i)
-
-where f combines left and right expectation values per term.
-For sum_Z observable: E_full = Σ_i w_i * (E_left_i + E_right_i)
-The additive combination follows from the locality of Z:
-  <Z_q> factorizes across partitions, so the total sum_Z is the
-  weighted sum of left and right contributions per QPD term.
-
-Multi-node execution:
-  The coordinator assigns SubcircuitPairs to available nodes, collects
-  results, and calls recombine(). In distributed mode each node runs
-  its pair(s) via mx.vmap and returns a scalar.
-
-Reference:
-  Peng et al. (2020) — "Simulating Large Quantum Circuits on a Small Quantum Computer"
-  Mitarai & Fujii (2021) — "Overhead for Simulating a Non-local Channel"
-"""
+"""Circuit cut coordinator."""
 
 from __future__ import annotations
 from dataclasses import dataclass
