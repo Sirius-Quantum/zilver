@@ -1,11 +1,4 @@
-"""
-Circuit IR and pure-function executor.
-
-Design goal: a Circuit compiles to a pure function
-    f(params: mx.array) -> mx.array (scalar expectation value)
-with no Python overhead inside, enabling mx.vmap and mx.compile
-to dispatch all 400 grid evaluations as a single Metal kernel.
-"""
+"""Circuit builder."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
