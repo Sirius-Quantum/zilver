@@ -140,8 +140,6 @@ pytest tests/   # 464 tests
 
 Apache 2.0. See [LICENSE](LICENSE).
 
-The simulation and network layer are fully open source. Trademarks "Sirius Quantum" and "Zilver" are reserved. The incentive and settlement layer is proprietary.
-
 ---
 
 ## Manifesto
