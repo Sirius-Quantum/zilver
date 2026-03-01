@@ -1,7 +1,5 @@
-"""
-Tests for verification protocol.
+"""Verification protocol tests.
 
-Correctness checks:
   - known_zero_state: expected = n_qubits, circuit has no ops
   - known_all_x: expected = -n_qubits
   - known_all_h: expected = 0

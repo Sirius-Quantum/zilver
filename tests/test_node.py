@@ -1,7 +1,5 @@
-"""
-Tests for Node daemon.
+"""Node daemon tests.
 
-Correctness checks:
   - NodeCapabilities.detect() returns sane values for the current machine
   - NodeCapabilities.supports() enforces backend and qubit limits
   - Node.execute() runs a job and returns a JobResult
