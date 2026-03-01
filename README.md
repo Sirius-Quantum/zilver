@@ -134,7 +134,7 @@ All parameterized gates are MLX-native compatible with `mx.vmap` and `mx.compile
 ## Development
 
 ```bash
-git clone https://github.com/deryakarl/zilver
+git clone https://github.com/sirius-quantum/zilver
 cd zilver
 pip install -e ".[dev,network]"
 pytest tests/   # 464 tests

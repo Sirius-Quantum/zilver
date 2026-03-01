@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/deryakarl/zilver
+git clone https://github.com/sirius-quantum/zilver
 cd zilver
 pip install -e ".[dev,network]"
 pytest tests/
