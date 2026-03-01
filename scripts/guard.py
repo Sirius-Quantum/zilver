@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Zilver repo guard: scans staged (or all tracked) files for accidental
-inclusion of secrets, internal references, or sensitive data.
-
-Used as a pre-commit hook and can be run standalone:
-    python scripts/guard.py           # scan staged files
-    python scripts/guard.py --all     # scan all tracked files
-    python scripts/guard.py --file <path>  # scan a specific file
-"""
+"""Pre-commit secret scanner."""
 
 import re
 import sys

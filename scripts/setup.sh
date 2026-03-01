@@ -1,7 +1,5 @@
 #!/bin/bash
-# Zilver local setup for Apple Silicon
-# Works on MacBook Pro/Air M-series and Mac Mini M-series
-# Usage: bash scripts/setup.sh
+# Local dev setup. Usage: bash scripts/setup.sh
 
 set -e
 
