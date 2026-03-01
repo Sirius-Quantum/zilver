@@ -1,13 +1,4 @@
-"""
-Loss landscape generation for the Sirius Plateau-Map benchmark.
-
-Replaces the Qiskit Aer sequential evaluation loop with a single
-batched MLX dispatch over a 20x20 parameter grid.
-
-Performance model (n_qubits=8, depth=4, 20x20 grid, 2 swept params):
-- Qiskit Aer (sequential): 400 evaluations + 1600 shift evaluations = 2000 calls
-- Zilver (batched vmap):   1 Metal dispatch covering all 2000 evaluations
-"""
+"""Loss landscape sampling."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
