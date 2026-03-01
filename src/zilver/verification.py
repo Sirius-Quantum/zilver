@@ -1,24 +1,4 @@
-"""
-Verification protocol for distributed simulation results.
-
-Two strategies:
-  1. Redundant execution — same job on 2 nodes, compare within tolerance.
-     Statevector simulation is deterministic: |E_A - E_B| should be < 1e-6.
-     A delta > tolerance signals a faulty node; both are flagged.
-
-  2. Spot-check — inject circuits with analytically known outputs into the
-     job stream at a configurable rate. A node that fails a spot-check is
-     flagged and its stake is slashed. Accumulated flags trigger deregistration.
-
-Stake slashing:
-  Reduces registry entry's stake by slash_amount per infraction.
-  Stake floors at 0. Nodes that accumulate flag_threshold flags are
-  automatically deregistered from the registry.
-
-Known-output circuit library:
-  zero_state, all_x, all_h — analytically verifiable for any qubit count.
-  SpotCheckScheduler manages a pool and controls injection rate.
-"""
+"""Node result verification."""
 
 from __future__ import annotations
 import time
