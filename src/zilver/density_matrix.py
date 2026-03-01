@@ -1,11 +1,4 @@
-"""
-Density matrix simulator for noise-aware quantum circuit simulation.
-
-State: (2^n, 2^n) complex64 — quadratic memory vs statevector's linear.
-Memory ceiling: M4 Pro (48GB) → 16 qubits, M2 Ultra (192GB) → 17 qubits.
-
-Qubit convention: qubit 0 = most significant bit (consistent with simulator.py).
-"""
+"""Noisy circuit simulation."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
