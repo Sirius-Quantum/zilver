@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import httpx
@@ -9,7 +11,7 @@ import httpx
 from .node import NodeCapabilities, SimJob, JobResult
 from .batch_distributor import BatchResult, BatchSlice
 
-import time
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -33,20 +35,36 @@ class NodeClient:
     timeout:
         Per-request timeout in seconds.  Defaults to 30 s, which is generous
         for large statevector jobs on remote hardware.
+    api_key:
+        Bearer token to include in ``Authorization`` headers.  When ``None``
+        no auth header is sent.  The key is issued by the registry on node
+        registration and should match the key configured on the node server.
 
     Example
     -------
     ::
 
-        client = NodeClient("http://192.168.1.5:7700")
+        client = NodeClient("http://192.168.1.5:7700", api_key="abc123...")
         job = SimJob(circuit_ops=[], n_qubits=4, n_params=0, params=[])
         result = client.execute(job)
         assert result.verify(job)
     """
 
-    def __init__(self, url: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        url:     str,
+        timeout: float = 30.0,
+        api_key: str | None = None,
+    ) -> None:
         self.url = url.rstrip("/")
+        self.api_key = api_key
         self._client = httpx.Client(timeout=timeout)
+
+    def _auth_headers(self) -> dict[str, str]:
+        key = getattr(self, "api_key", None)
+        if key:
+            return {"Authorization": f"Bearer {key}"}
+        return {}
 
     def execute(self, job: SimJob) -> JobResult:
         """
@@ -65,10 +83,14 @@ class NodeClient:
         Raises
         ------
         httpx.HTTPStatusError
-            If the node returns a 422 (unsupported backend / over capacity)
-            or any other non-2xx status.
+            If the node returns a 401 (bad API key), 422 (unsupported backend
+            / over capacity) or any other non-2xx status.
         """
-        resp = self._client.post(f"{self.url}/execute", json=job.to_dict())
+        resp = self._client.post(
+            f"{self.url}/execute",
+            json=job.to_dict(),
+            headers=self._auth_headers(),
+        )
         resp.raise_for_status()
         return JobResult(**resp.json())
 
@@ -137,24 +159,52 @@ class RegistryClient:
     timeout:
         Per-request timeout in seconds.  Discovery calls are cheap and default
         to 10 s; adjust upward on unreliable networks.
+    api_key:
+        Bearer token to include on ``register`` and ``heartbeat`` calls.
+        When ``None`` no auth header is sent.
 
     Example
     -------
     ::
 
         reg = RegistryClient("http://registry-host:7701")
-        reg.register(node.caps, node_url="http://my-mac:7700")
+        ok = reg.register(node.caps, node_url="http://my-mac:7700")
+        api_key = reg.last_api_key   # store securely, e.g. Keychain
         # ... serve jobs ...
         reg.deregister(node.caps.node_id)
     """
 
-    def __init__(self, url: str, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        url:     str,
+        timeout: float = 10.0,
+        api_key: str | None = None,
+    ) -> None:
         self.url = url.rstrip("/")
+        self.api_key = api_key
         self._client = httpx.Client(timeout=timeout)
+        self.last_api_key: str | None = None
 
-    def register(self, caps: NodeCapabilities, node_url: str) -> bool:
+    def _auth_headers(self) -> dict[str, str]:
+        key = getattr(self, "api_key", None)
+        if key:
+            return {"Authorization": f"Bearer {key}"}
+        return {}
+
+    def register(
+        self,
+        caps:              NodeCapabilities,
+        node_url:          str,
+        private_key_bytes: bytes | None = None,
+        public_key_bytes:  bytes | None = None,
+        se_label:          str  | None = None,
+    ) -> bool:
         """
         Register (or re-register) a node with the registry.
+
+        The registry issues a fresh API key on each registration.  After this
+        call, the key is accessible via ``self.last_api_key``.  Callers
+        (typically the CLI) should store it securely, e.g. in macOS Keychain.
 
         Parameters
         ----------
@@ -162,8 +212,14 @@ class RegistryClient:
             The node's hardware capabilities.
         node_url:
             The reachable HTTP base URL of the node server,
-            e.g. ``"http://192.168.1.10:7700"``.  Stored by the registry so
-            coordinators can connect directly without a second lookup.
+            e.g. ``"http://192.168.1.10:7700"``.
+        private_key_bytes:
+            Raw 32-byte Ed25519 private key.  Used when ``se_label`` is not set.
+        public_key_bytes:
+            Raw public key bytes — 32 bytes for Ed25519, 65 bytes for SE P-256.
+        se_label:
+            Keychain label for a Secure Enclave P-256 key.  When set, signing
+            uses the SE key and ``private_key_bytes`` is ignored.
 
         Returns
         -------
@@ -175,10 +231,25 @@ class RegistryClient:
         httpx.HTTPStatusError
             On 4xx / 5xx responses.
         """
-        body = {"caps": caps.to_dict(), "url": node_url}
-        resp = self._client.post(f"{self.url}/nodes", json=body)
+        body: dict = {"caps": caps.to_dict(), "url": node_url}
+
+        try:
+            from . import _client_ops
+            _client_ops.sign_registration_body(
+                body, node_url, private_key_bytes, public_key_bytes, se_label
+            )
+        except ImportError:
+            pass
+
+        resp = self._client.post(
+            f"{self.url}/nodes",
+            json=body,
+            headers=self._auth_headers(),
+        )
         resp.raise_for_status()
-        return resp.json().get("registered", False)
+        data = resp.json()
+        self.last_api_key = data.get("api_key")
+        return data.get("registered", False)
 
     def deregister(self, node_id: str) -> bool:
         """
@@ -211,11 +282,33 @@ class RegistryClient:
         bool
             ``True`` on success, ``False`` if the node was not found.
         """
-        resp = self._client.post(f"{self.url}/nodes/{node_id}/heartbeat")
+        resp = self._client.post(
+            f"{self.url}/nodes/{node_id}/heartbeat",
+            headers=self._auth_headers(),
+        )
         if resp.status_code == 404:
             return False
         resp.raise_for_status()
         return True
+
+    def _match_entry(
+        self,
+        backend:   str,
+        n_qubits:  int,
+        min_stake: int = 0,
+    ) -> dict[str, Any] | None:
+        """Return the full match response dict (with node_id and url), or None."""
+        params: dict[str, Any] = {
+            "backend": backend,
+            "n_qubits": n_qubits,
+            "min_stake": min_stake,
+        }
+        resp = self._client.get(f"{self.url}/match", params=params,
+                                headers=self._auth_headers())
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
 
     def match(
         self,
@@ -241,16 +334,52 @@ class RegistryClient:
             The node's HTTP base URL, e.g. ``"http://192.168.1.5:7700"``,
             or ``None`` if no eligible node is available.
         """
-        params: dict[str, Any] = {
-            "backend": backend,
-            "n_qubits": n_qubits,
-            "min_stake": min_stake,
+        entry = self._match_entry(backend, n_qubits, min_stake)
+        return entry.get("url") if entry is not None else None
+
+    def contribute(
+        self,
+        node_id:        str,
+        elapsed_ms:     float,
+        memory_used_mb: float,
+        proof:          str,
+        job_token:      str = "",
+    ) -> dict[str, Any]:
+        """
+        Report a completed job contribution and claim SQT rewards.
+
+        Parameters
+        ----------
+        node_id:
+            The node that executed the job.
+        elapsed_ms:
+            Wall-clock time of the job in milliseconds.
+        memory_used_mb:
+            Peak Metal memory used by the job.
+        proof:
+            SHA-256 hex digest from :class:`~zilver.node.JobResult`.
+        job_token:
+            Single-use token returned by ``GET /match``.  Required when the
+            registry enforces contribution authorisation.
+
+        Returns
+        -------
+        dict
+            ``{"sqt_earned": float, "balance": float}``
+        """
+        body = {
+            "job_token":      job_token,
+            "elapsed_ms":     elapsed_ms,
+            "memory_used_mb": memory_used_mb,
+            "proof":          proof,
         }
-        resp = self._client.get(f"{self.url}/match", params=params)
-        if resp.status_code == 404:
-            return None
+        resp = self._client.post(
+            f"{self.url}/nodes/{node_id}/contribute",
+            json=body,
+            headers=self._auth_headers(),
+        )
         resp.raise_for_status()
-        return resp.json().get("url")
+        return resp.json()
 
     def nodes(self) -> list[dict[str, Any]]:
         """
@@ -260,9 +389,9 @@ class RegistryClient:
         -------
         list[dict]
             Each element is a ``NodeCapabilities.to_dict()`` extended with
-            a ``"url"`` field.
+            a ``"url"`` field and ``"node_execute_key"`` field.
         """
-        resp = self._client.get(f"{self.url}/nodes")
+        resp = self._client.get(f"{self.url}/nodes", headers=self._auth_headers())
         resp.raise_for_status()
         return resp.json()
 
@@ -313,6 +442,9 @@ class NetworkCoordinator:
     timeout:
         HTTP timeout forwarded to both :class:`RegistryClient` and
         :class:`NodeClient`.
+    api_key:
+        Bearer token for node ``/execute`` requests.  Passed through to
+        :class:`NodeClient` on each job submission.
 
     Example
     -------
@@ -321,7 +453,7 @@ class NetworkCoordinator:
         from zilver.client import NetworkCoordinator
         from zilver.node import SimJob
 
-        coord = NetworkCoordinator("http://registry-host:7701")
+        coord = NetworkCoordinator("http://registry-host:7701", api_key="abc...")
 
         job = SimJob(
             circuit_ops=[{"type": "h", "qubits": [0], "param_idx": None}],
@@ -331,10 +463,22 @@ class NetworkCoordinator:
         print(result.expectation)
     """
 
-    def __init__(self, registry_url: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        registry_url:    str,
+        timeout:         float = 30.0,
+        api_key:         str | None = None,
+        client_api_key:  str | None = None,
+    ) -> None:
         self.registry_url = registry_url
         self.timeout = timeout
-        self._registry = RegistryClient(registry_url, timeout=min(timeout, 10.0))
+        self.api_key = api_key  # fallback for node /execute when no key in match response
+        # client_api_key authenticates this coordinator to the registry (/match, /nodes, etc.)
+        self._registry = RegistryClient(
+            registry_url,
+            timeout=min(timeout, 10.0),
+            api_key=client_api_key,
+        )
 
     def submit(self, job: SimJob) -> JobResult:
         """
@@ -360,14 +504,30 @@ class NetworkCoordinator:
         httpx.HTTPStatusError
             On node-side errors (wrong backend, over-capacity, etc.).
         """
-        node_url = self._registry.match(job.backend, job.n_qubits)
-        if node_url is None:
+        entry = self._registry._match_entry(job.backend, job.n_qubits)
+        if entry is None:
             raise RuntimeError(
                 f"No eligible node for backend={job.backend!r} "
                 f"n_qubits={job.n_qubits}"
             )
-        with NodeClient(node_url, timeout=self.timeout) as node_client:
-            return node_client.execute(job)
+        node_url         = entry.get("url", "")
+        node_id          = entry.get("node_id", "")
+        job_token        = entry.get("job_token", "")
+        node_execute_key = entry.get("node_execute_key") or self.api_key
+        with NodeClient(node_url, timeout=self.timeout, api_key=node_execute_key) as node_client:
+            result = node_client.execute(job)
+        # Best-effort contribution report — non-fatal if registry is unreachable
+        try:
+            self._registry.contribute(
+                node_id=node_id,
+                elapsed_ms=result.elapsed_ms,
+                memory_used_mb=result.memory_used_mb,
+                proof=result.proof,
+                job_token=job_token,
+            )
+        except Exception as exc:
+            _log.warning("contribute() failed for node %s: %s", node_id, exc)
+        return result
 
     def submit_batch(
         self,
@@ -447,13 +607,14 @@ class NetworkCoordinator:
             if start == end:
                 continue
 
-            node_url = node_info.get("url", "")
-            node_id  = node_info.get("node_id", "unknown")
+            node_url         = node_info.get("url", "")
+            node_id          = node_info.get("node_id", "unknown")
+            node_execute_key = node_info.get("node_execute_key") or self.api_key
 
             ts = time.perf_counter()
             slice_expectations: list[float] = []
 
-            with NodeClient(node_url, timeout=self.timeout) as nc:
+            with NodeClient(node_url, timeout=self.timeout, api_key=node_execute_key) as nc:
                 for i in range(start, end):
                     import mlx.core as mx
                     row = params_batch[i]

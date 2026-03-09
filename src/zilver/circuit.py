@@ -15,22 +15,27 @@ class GateOp:
     """
     A single gate operation in the circuit.
 
-    gate_fn: callable(params) -> (2^k, 2^k) gate matrix, or a fixed matrix.
-    qubits:  target qubit indices.
+    gate_fn:       callable(params) -> (2^k, 2^k) gate matrix, or a fixed matrix.
+    qubits:        target qubit indices.
     param_indices: indices into the parameter vector this gate consumes.
                    Empty list for fixed (non-parameterized) gates.
+    kind:          gate type string used for serialization (e.g. "h", "ry", "cnot").
+                   Set by every factory classmethod.  An empty string indicates a
+                   gate that cannot be serialized for remote execution (e.g. a
+                   custom lambda passed directly to GateOp()).
     """
     gate_fn: Callable
     qubits: list[int]
     param_indices: list[int] = field(default_factory=list)
+    kind: str = ""
 
     @classmethod
-    def fixed(cls, matrix: mx.array, qubits: list[int]) -> "GateOp":
-        return cls(gate_fn=lambda _: matrix, qubits=qubits, param_indices=[])
+    def fixed(cls, matrix: mx.array, qubits: list[int], kind: str = "") -> "GateOp":
+        return cls(gate_fn=lambda _: matrix, qubits=qubits, param_indices=[], kind=kind)
 
     @classmethod
     def rx(cls, qubit: int, param_idx: int) -> "GateOp":
-        def _rx(p):
+        def _rx(p):  # noqa: E306
             # MLX-native: no float() calls, stays in compute graph for vmap/compile
             theta = p[0]
             c = mx.cos(theta / 2)
@@ -39,7 +44,7 @@ class GateOp:
             real = mx.stack([mx.stack([c, z]), mx.stack([z, c])])
             imag = mx.stack([mx.stack([z, -s]), mx.stack([-s, z])])
             return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
-        return cls(gate_fn=_rx, qubits=[qubit], param_indices=[param_idx])
+        return cls(gate_fn=_rx, qubits=[qubit], param_indices=[param_idx], kind="rx")
 
     @classmethod
     def ry(cls, qubit: int, param_idx: int) -> "GateOp":
@@ -48,7 +53,7 @@ class GateOp:
             c = mx.cos(theta / 2)
             s = mx.sin(theta / 2)
             return mx.stack([mx.stack([c, -s]), mx.stack([s, c])]).astype(mx.complex64)
-        return cls(gate_fn=_ry, qubits=[qubit], param_indices=[param_idx])
+        return cls(gate_fn=_ry, qubits=[qubit], param_indices=[param_idx], kind="ry")
 
     @classmethod
     def rz(cls, qubit: int, param_idx: int) -> "GateOp":
@@ -60,7 +65,7 @@ class GateOp:
             real = mx.stack([mx.stack([c, z]), mx.stack([z, c])])
             imag = mx.stack([mx.stack([-s, z]), mx.stack([z, s])])
             return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
-        return cls(gate_fn=_rz, qubits=[qubit], param_indices=[param_idx])
+        return cls(gate_fn=_rz, qubits=[qubit], param_indices=[param_idx], kind="rz")
 
     @classmethod
     def u3(cls, qubit: int, theta_idx: int, phi_idx: int, lam_idx: int) -> "GateOp":
@@ -98,27 +103,27 @@ class GateOp:
             imag = mx.stack([mx.stack([r00_im, r01_im]), mx.stack([r10_im, r11_im])])
             return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
 
-        return cls(gate_fn=_u3, qubits=[qubit], param_indices=[theta_idx, phi_idx, lam_idx])
+        return cls(gate_fn=_u3, qubits=[qubit], param_indices=[theta_idx, phi_idx, lam_idx], kind="u3")
 
     @classmethod
     def cnot(cls, control: int, target: int) -> "GateOp":
-        return cls.fixed(G.CNOT(), [control, target])
+        return cls.fixed(G.CNOT(), [control, target], kind="cnot")
 
     @classmethod
     def cz(cls, control: int, target: int) -> "GateOp":
-        return cls.fixed(G.CZ(), [control, target])
+        return cls.fixed(G.CZ(), [control, target], kind="cz")
 
     @classmethod
     def h(cls, qubit: int) -> "GateOp":
-        return cls.fixed(G.H(), [qubit])
+        return cls.fixed(G.H(), [qubit], kind="h")
 
     @classmethod
     def toffoli(cls, control_a: int, control_b: int, target: int) -> "GateOp":
-        return cls.fixed(G.Toffoli(), [control_a, control_b, target])
+        return cls.fixed(G.Toffoli(), [control_a, control_b, target], kind="toffoli")
 
     @classmethod
     def fredkin(cls, control: int, target_a: int, target_b: int) -> "GateOp":
-        return cls.fixed(G.Fredkin(), [control, target_a, target_b])
+        return cls.fixed(G.Fredkin(), [control, target_a, target_b], kind="fredkin")
 
 
 class Circuit:
@@ -156,7 +161,7 @@ class Circuit:
         return self.add(GateOp.h(qubit))
 
     def x(self, qubit: int) -> "Circuit":
-        return self.add(GateOp.fixed(G.X(), [qubit]))
+        return self.add(GateOp.fixed(G.X(), [qubit], kind="x"))
 
     def cnot(self, control: int, target: int) -> "Circuit":
         return self.add(GateOp.cnot(control, target))
@@ -201,7 +206,7 @@ class Circuit:
                 mx.stack([ z, z, z, -s]),
             ])
             return real.astype(mx.complex64) + 1j * imag.astype(mx.complex64)
-        op = GateOp(gate_fn=_rzz, qubits=[qubit_a, qubit_b], param_indices=[param_idx])
+        op = GateOp(gate_fn=_rzz, qubits=[qubit_a, qubit_b], param_indices=[param_idx], kind="rzz")
         return self.add(op)
 
     def toffoli(self, control_a: int, control_b: int, target: int) -> "Circuit":
@@ -286,7 +291,8 @@ class Circuit:
         def flush(qubit: int) -> None:
             if qubit in pending:
                 mat = mx.array(pending.pop(qubit))
-                fused._ops.append(GateOp.fixed(mat, [qubit]))
+                # kind="fused" marks this gate as a composition — not round-trippable
+                fused._ops.append(GateOp.fixed(mat, [qubit], kind="fused"))
 
         for op in self._ops:
             is_fixed_single = (len(op.param_indices) == 0 and len(op.qubits) == 1)

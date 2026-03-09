@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zilver"
-version = "0.1.0"
+version = "0.3.0"
 description = "Open quantum simulation network for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,7 +35,7 @@ Manifesto = "https://github.com/sirius-quantum/zilver/blob/main/MANIFESTO.md"
 [project.optional-dependencies]
 dev     = ["pytest>=7.4", "pytest-benchmark>=4.0"]
 qiskit  = ["qiskit-aer>=0.12", "qiskit>=0.45"]
-network = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx>=0.27"]
+network = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx>=0.27", "slowapi>=0.1.9", "cryptography>=42.0", "rich>=13.0", "pyobjc-framework-Security>=10.0; sys_platform == 'darwin'"]
 
 [project.scripts]
 zilver-node     = "zilver.cli:main"
@@ -43,6 +43,12 @@ zilver-registry = "zilver.cli:main_registry"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zilver"]
+exclude = [
+    "src/zilver/wire_types.py",
+    "src/zilver/formats.py",
+    "src/zilver/pricing.py",
+    "src/zilver/braket_adapter.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

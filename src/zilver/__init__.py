@@ -14,13 +14,21 @@ Distributed network (requires ``pip install zilver[network]``)
 lazily so that the simulator remains usable without FastAPI / httpx installed.
 """
 
-from .circuit import Circuit, GateOp
-from .simulator import StateVector, apply_gate, expectation_z, expectation_pauli_sum
-from .gradients import param_shift_gradient, param_shift_gradient_batched
-from .landscape import LossLandscape, LandscapeResult
-from . import gates
+try:
+    from .circuit import Circuit, GateOp
+    from .simulator import StateVector, apply_gate, expectation_z, expectation_pauli_sum
+    from .gradients import param_shift_gradient, param_shift_gradient_batched
+    from .landscape import LossLandscape, LandscapeResult
+    from . import gates
+except ImportError:
+    # MLX not available (e.g., registry running on Linux x86).
+    # Simulation APIs are unavailable; network/registry layer still works.
+    Circuit = GateOp = StateVector = apply_gate = None          # type: ignore[assignment,misc]
+    expectation_z = expectation_pauli_sum = None                # type: ignore[assignment]
+    param_shift_gradient = param_shift_gradient_batched = None  # type: ignore[assignment]
+    LossLandscape = LandscapeResult = gates = None              # type: ignore[assignment,misc]
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 __all__ = [
     # Core simulation
     "Circuit",
@@ -53,4 +61,5 @@ def __getattr__(name: str):
     if name in _network:
         from .client import NodeClient, RegistryClient, NetworkCoordinator  # noqa: F401
         return locals()[name]
+
     raise AttributeError(f"module 'zilver' has no attribute {name!r}")

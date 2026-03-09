@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Iterator
 
-from .node import NodeCapabilities, SimJob
+from .node_types import NodeCapabilities, SimJob
 
 
 # ---------------------------------------------------------------------------

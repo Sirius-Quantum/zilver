@@ -1,200 +1,39 @@
 """Simulation node."""
 
 from __future__ import annotations
-import hashlib
-import json
-import platform
-import subprocess
+
 import time
-import uuid
-from dataclasses import dataclass, field, asdict
 from typing import Any
 
 import mlx.core as mx
 import numpy as np
 
+# Pure-Python types shared with the registry (no MLX dependency there)
+from .node_types import (
+    NodeCapabilities,
+    SimJob,
+    JobResult,
+    estimate_memory_bytes,
+    _available_memory_bytes,
+    _compute_proof,
+    _compute_proof_v2,
+    _detect_hardware_uuid,
+    _detect_chip,
+    _detect_ram_gb,
+    _sv_qubit_ceiling,
+    _dm_qubit_ceiling,
+)
 
-# ---------------------------------------------------------------------------
-# Hardware detection
-# ---------------------------------------------------------------------------
-
-def _detect_chip() -> str:
-    """Return Apple Silicon chip identifier, e.g. 'Apple M4 Pro'."""
-    try:
-        out = subprocess.check_output(
-            ["sysctl", "-n", "machdep.cpu.brand_string"],
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        ).decode().strip()
-        if out:
-            return out
-    except Exception:
-        pass
-    return platform.processor() or "unknown"
-
-
-def _detect_ram_gb() -> int:
-    """Return total physical RAM in GB."""
-    try:
-        out = subprocess.check_output(
-            ["sysctl", "-n", "hw.memsize"],
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-        ).decode().strip()
-        return int(out) // (1024 ** 3)
-    except Exception:
-        return 8   # conservative fallback
-
-
-def _sv_qubit_ceiling(ram_gb: int) -> int:
-    """
-    Maximum qubits for exact statevector: (2^n,) complex64 = 8 bytes * 2^n.
-    Use 80% of RAM to leave headroom.
-    """
-    usable = int(ram_gb * 0.8 * (1024 ** 3))
-    n = 0
-    while (8 * (2 ** (n + 1))) <= usable:
-        n += 1
-    return min(n, 34)   # cap at AWS SV1 equivalence
-
-
-def _dm_qubit_ceiling(ram_gb: int) -> int:
-    """
-    Maximum qubits for density matrix: (2^n, 2^n) complex64 = 8 * 4^n bytes.
-    """
-    usable = int(ram_gb * 0.8 * (1024 ** 3))
-    n = 0
-    while (8 * (4 ** (n + 1))) <= usable:
-        n += 1
-    return min(n, 17)
-
-
-# ---------------------------------------------------------------------------
-# Capabilities
-# ---------------------------------------------------------------------------
-
-@dataclass
-class NodeCapabilities:
-    """
-    Hardware capabilities advertised to the capability registry.
-
-    Populated automatically by NodeCapabilities.detect() on startup.
-    """
-    node_id:        str
-    chip:           str
-    ram_gb:         int
-    sv_qubits_max:  int
-    dm_qubits_max:  int
-    tn_qubits_max:  int    # MPS target; independent of RAM
-    backends:       list[str]
-    jobs_completed: int = 0
-    stake:          int = 0
-
-    @classmethod
-    def detect(
-        cls,
-        backends: list[str] | None = None,
-        node_id: str | None = None,
-    ) -> "NodeCapabilities":
-        chip   = _detect_chip()
-        ram_gb = _detect_ram_gb()
-        return cls(
-            node_id       = node_id or str(uuid.uuid4()),
-            chip          = chip,
-            ram_gb        = ram_gb,
-            sv_qubits_max = _sv_qubit_ceiling(ram_gb),
-            dm_qubits_max = _dm_qubit_ceiling(ram_gb),
-            tn_qubits_max = 50,
-            backends      = backends or ["sv"],
-        )
-
-    def supports(self, backend: str, n_qubits: int) -> bool:
-        if backend not in self.backends:
-            return False
-        if backend == "sv"  and n_qubits > self.sv_qubits_max:
-            return False
-        if backend == "dm"  and n_qubits > self.dm_qubits_max:
-            return False
-        if backend == "tn"  and n_qubits > self.tn_qubits_max:
-            return False
-        return True
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-# ---------------------------------------------------------------------------
-# Job / Result
-# ---------------------------------------------------------------------------
-
-@dataclass
-class SimJob:
-    """
-    A simulation job submitted to a node.
-
-    circuit_ops: serializable list of gate operations
-                 [{"type": "h"|"ry"|"cnot"|..., "qubits": [...], "param_idx": int|None}]
-    n_qubits:    total qubit count
-    n_params:    number of circuit parameters
-    params:      flat list of float parameter values
-    observable:  "sum_z" | "z0"
-    backend:     "sv" | "dm" | "tn"
-    job_id:      unique identifier
-    """
-    circuit_ops: list[dict]
-    n_qubits:    int
-    n_params:    int
-    params:      list[float]
-    observable:  str = "sum_z"
-    backend:     str = "sv"
-    job_id:      str = field(default_factory=lambda: str(uuid.uuid4()))
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "SimJob":
-        return cls(**d)
-
-
-@dataclass
-class JobResult:
-    """
-    Result returned by a node after executing a SimJob.
-
-    expectation: computed expectation value
-    job_id:      matches SimJob.job_id
-    node_id:     identity of the executing node
-    elapsed_ms:  wall-clock execution time
-    proof:       SHA-256 of (job_id + params + expectation) for verification
-    """
-    expectation: float
-    job_id:      str
-    node_id:     str
-    elapsed_ms:  float
-    proof:       str
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    def verify(self, job: SimJob) -> bool:
-        """Recompute and check the proof hash."""
-        return self.proof == _compute_proof(job.job_id, job.params, self.expectation)
-
-
-def _compute_proof(job_id: str, params: list[float], expectation: float) -> str:
-    """Compute a SHA-256 proof for a job result.
-
-    Serialises job_id, params, and expectation (rounded to 8 d.p.) as a
-    deterministic JSON string and returns its hex digest. Used by
-    JobResult.verify() to confirm the node computed the correct result.
-    """
-    payload = json.dumps({
-        "job_id":     job_id,
-        "params":     params,
-        "expectation": round(expectation, 8),
-    }, sort_keys=True)
-    return hashlib.sha256(payload.encode()).hexdigest()
+__all__ = [
+    # Re-export so existing `from zilver.node import NodeCapabilities` keeps working
+    "NodeCapabilities",
+    "SimJob",
+    "JobResult",
+    "estimate_memory_bytes",
+    "_compute_proof",
+    "Node",
+    "job_from_circuit",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -202,14 +41,28 @@ def _compute_proof(job_id: str, params: list[float], expectation: float) -> str:
 # ---------------------------------------------------------------------------
 
 def _build_circuit_from_ops(ops: list[dict], n_qubits: int, n_params: int):
-    """Reconstruct a Circuit from a serialized ops list."""
+    """
+    Reconstruct a Circuit from a serialized ops list.
+
+    Supports both the current format (``param_indices`` list) and the legacy
+    format (``param_idx`` single value) for backward compatibility.
+    """
     from .circuit import Circuit
     c = Circuit(n_qubits)
     c.n_params = n_params
     for op in ops:
-        kind    = op["type"]
-        qubits  = op["qubits"]
-        pidx    = op.get("param_idx")
+        kind   = op["type"]
+        qubits = op["qubits"]
+
+        # Resolve parameter indices — support both serialization formats
+        raw_indices = op.get("param_indices")
+        if raw_indices is not None:
+            param_indices = raw_indices
+        else:
+            legacy = op.get("param_idx")
+            param_indices = [legacy] if legacy is not None else []
+        pidx = param_indices[0] if param_indices else None
+
         if kind == "h":
             c.h(qubits[0])
         elif kind == "x":
@@ -226,6 +79,17 @@ def _build_circuit_from_ops(ops: list[dict], n_qubits: int, n_params: int):
             c.cz(qubits[0], qubits[1])
         elif kind == "rzz":
             c.rzz(qubits[0], qubits[1], pidx)
+        elif kind == "u3":
+            if len(param_indices) < 3:
+                raise ValueError(
+                    "u3 gate requires 3 param_indices (theta, phi, lambda); "
+                    f"got {param_indices!r}"
+                )
+            c.u3(qubits[0], param_indices[0], param_indices[1], param_indices[2])
+        elif kind == "toffoli":
+            c.toffoli(qubits[0], qubits[1], qubits[2])
+        elif kind == "fredkin":
+            c.fredkin(qubits[0], qubits[1], qubits[2])
         else:
             raise ValueError(f"Unknown gate type in job ops: {kind!r}")
     return c
@@ -259,26 +123,36 @@ class Node:
         backends: list[str] | None = None,
         node_id: str | None = None,
         wallet: str | None = None,
+        private_key_bytes: bytes | None = None,
+        public_key_bytes:  bytes | None = None,
+        se_label:          str   | None = None,
     ) -> "Node":
         """
         Initialize a node with auto-detected hardware capabilities.
 
         Args:
-            backends: list of ["sv", "dm", "tn"]; default ["sv"]
-            node_id:  explicit node ID; auto-generated if None
-            wallet:   wallet address for reward settlement (future use)
+            backends:          list of ["sv", "dm", "tn"]; default ["sv"]
+            node_id:           explicit node ID; auto-generated if None
+            wallet:            wallet address for reward settlement (future use)
+            private_key_bytes: raw Ed25519 private key for result signing (None for SE)
+            public_key_bytes:  raw public key bytes (Ed25519 or P-256 uncompressed)
+            se_label:          Secure Enclave key label (takes priority over private_key_bytes)
         """
         caps = NodeCapabilities.detect(backends=backends, node_id=node_id)
         node = cls(caps)
-        node._wallet = wallet
+        node._wallet            = wallet
+        node._private_key_bytes = private_key_bytes
+        node._public_key_bytes  = public_key_bytes
+        node._se_label          = se_label
         return node
 
     def execute(self, job: SimJob) -> JobResult:
         """
-        Execute a simulation job and return a verified result.
+        Execute a simulation job and return a signed result.
 
         Raises ValueError if the node cannot handle the job
-        (backend unsupported or qubit count exceeds capacity).
+        (backend unsupported, qubit count exceeds capacity, or
+        insufficient free system memory for the job).
         """
         if not self.caps.supports(job.backend, job.n_qubits):
             raise ValueError(
@@ -288,20 +162,171 @@ class Node:
                 f"dm_max={self.caps.dm_qubits_max})"
             )
 
+        needed    = estimate_memory_bytes(job.n_qubits, job.backend)
+        available = _available_memory_bytes()
+        if needed > available:
+            raise ValueError(
+                f"Insufficient memory for job: needs {needed / 2**20:.0f} MB, "
+                f"only {available / 2**20:.0f} MB free"
+            )
+
+        # Reset Metal peak counter before the run
+        try:
+            if hasattr(mx, "reset_peak_memory"):
+                mx.reset_peak_memory()
+            elif hasattr(mx.metal, "reset_peak_memory"):
+                mx.metal.reset_peak_memory()
+        except Exception:
+            pass
+
         t0 = time.perf_counter()
-        expectation = self._run(job)
+        result_data = self._run_typed(job)
         elapsed_ms  = (time.perf_counter() - t0) * 1000.0
+
+        # Read peak Metal memory consumed by this job
+        memory_used_mb = 0.0
+        try:
+            if hasattr(mx, "get_peak_memory"):
+                memory_used_mb = mx.get_peak_memory() / (1024 ** 2)
+            elif hasattr(mx.metal, "get_peak_memory"):
+                memory_used_mb = mx.metal.get_peak_memory() / (1024 ** 2)
+        except Exception:
+            pass
 
         self.caps.jobs_completed += 1
 
-        proof = _compute_proof(job.job_id, job.params, expectation)
+        expectation = result_data.get("expectation", 0.0)
+
+        # Compute proof — use v2 format for non-expectation result types
+        result_type = getattr(job, "result_type", "expectation")
+        if result_type == "expectation":
+            proof = _compute_proof(job.job_id, job.params, expectation)
+        elif result_type == "samples":
+            samples = result_data.get("samples") or []
+            proof = _compute_proof_v2(
+                job.job_id, job.params, "samples", {"samples": sorted(samples)}
+            )
+        elif result_type == "statevector":
+            import json as _json
+            sv = result_data.get("statevector") or []
+            sv_bytes = _json.dumps(sv, sort_keys=True).encode()
+            import hashlib as _hashlib
+            sv_hash = _hashlib.sha256(sv_bytes).hexdigest()
+            proof = _compute_proof_v2(
+                job.job_id, job.params, "statevector", {"statevector_sha256": sv_hash}
+            )
+        elif result_type == "pauli":
+            pe = result_data.get("pauli_expectations") or {}
+            proof = _compute_proof_v2(
+                job.job_id, job.params, "pauli",
+                {k: round(v, 8) for k, v in sorted(pe.items())}
+            )
+        else:
+            proof = _compute_proof(job.job_id, job.params, expectation)
+
+        # Sign the proof if we have a key
+        node_signature = ""
+        node_pubkey    = ""
+        private_key_bytes = getattr(self, "_private_key_bytes", None)
+        public_key_bytes  = getattr(self, "_public_key_bytes",  None)
+        se_label          = getattr(self, "_se_label",          None)
+        if public_key_bytes is not None and (
+            private_key_bytes is not None or se_label is not None
+        ):
+            try:
+                from .security import sign_result
+                node_signature = sign_result(proof, private_key_bytes, se_label)
+                node_pubkey    = public_key_bytes.hex()
+            except Exception:
+                pass
+
         return JobResult(
-            expectation = expectation,
-            job_id      = job.job_id,
-            node_id     = self.caps.node_id,
-            elapsed_ms  = elapsed_ms,
-            proof       = proof,
+            expectation        = expectation,
+            job_id             = job.job_id,
+            node_id            = self.caps.node_id,
+            elapsed_ms         = elapsed_ms,
+            proof              = proof,
+            memory_used_mb     = memory_used_mb,
+            node_signature     = node_signature,
+            node_pubkey        = node_pubkey,
+            samples            = result_data.get("samples"),
+            sample_counts      = result_data.get("sample_counts"),
+            statevector        = result_data.get("statevector"),
+            pauli_expectations = result_data.get("pauli_expectations"),
         )
+
+    def _run_typed(self, job: SimJob) -> dict:
+        """Execute job and return a result dict covering all result_type variants."""
+        result_type = getattr(job, "result_type", "expectation")
+        params_mx   = mx.array(np.array(job.params, dtype=np.float32))
+
+        if result_type == "samples":
+            return self._run_samples(job, params_mx)
+        if result_type == "statevector":
+            return self._run_statevector(job, params_mx)
+        if result_type == "pauli":
+            return self._run_pauli(job, params_mx)
+        # Default: expectation
+        expectation = self._run(job)
+        return {"expectation": float(expectation)}
+
+    def _run_samples(self, job: SimJob, params: mx.array) -> dict:
+        """Sample bitstrings from the statevector probability distribution."""
+        shots = getattr(job, "shots", None) or 1024
+        circuit = _build_circuit_from_ops(job.circuit_ops, job.n_qubits, job.n_params)
+        state   = circuit._run(params)
+        mx.eval(state)
+        probs = np.array((mx.abs(state) ** 2).tolist(), dtype=np.float64)
+        probs = np.abs(probs)
+        probs /= probs.sum()  # renormalize for numerical safety
+        n = job.n_qubits
+        indices   = np.random.choice(len(probs), size=shots, p=probs)
+        bitstrings = [format(int(idx), f"0{n}b") for idx in indices]
+        counts: dict[str, int] = {}
+        for s in bitstrings:
+            counts[s] = counts.get(s, 0) + 1
+        # Expectation from sample mean of Z eigenvalues
+        expval = float(
+            sum((-1) ** b.count("1") / n * v for b, v in counts.items()) / shots
+        ) if n > 0 else 0.0
+        return {"samples": bitstrings, "sample_counts": counts, "expectation": expval}
+
+    def _run_statevector(self, job: SimJob, params: mx.array) -> dict:
+        """Return the full state vector as [[real, imag], …]."""
+        from .simulator import expectation_pauli_sum, expectation_z
+        circuit = _build_circuit_from_ops(job.circuit_ops, job.n_qubits, job.n_params)
+        state   = circuit._run(params)
+        mx.eval(state)
+        sv_np    = np.array(state.tolist(), dtype=np.complex64)
+        sv_pairs = [[float(v.real), float(v.imag)] for v in sv_np]
+        if job.observable == "sum_z":
+            expval = float(expectation_pauli_sum(state, job.n_qubits))
+        else:
+            expval = float(expectation_z(state, 0, job.n_qubits))
+        return {"statevector": sv_pairs, "expectation": expval}
+
+    def _run_pauli(self, job: SimJob, params: mx.array) -> dict:
+        """Compute expectation values for a Pauli Hamiltonian."""
+        hamiltonian = getattr(job, "hamiltonian", None) or []
+        circuit = _build_circuit_from_ops(job.circuit_ops, job.n_qubits, job.n_params)
+        state   = circuit._run(params)
+        mx.eval(state)
+
+        pauli_expectations: dict[str, float] = {}
+        total_expectation = 0.0
+
+        for term in hamiltonian:
+            coeff      = float(term.get("coeff", 1.0))
+            pauli_str  = str(term.get("pauli", "Z" * job.n_qubits))
+            term_exp   = _expectation_pauli_term(state, pauli_str, job.n_qubits)
+            weighted   = coeff * term_exp
+            pauli_expectations[pauli_str] = term_exp
+            total_expectation += weighted
+
+        return {
+            "pauli_expectations": pauli_expectations,
+            "expectation": total_expectation,
+        }
 
     def _run(self, job: SimJob) -> float:
         params = mx.array(np.array(job.params, dtype=np.float32))
@@ -365,6 +390,52 @@ class Node:
 # Job serialization helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Pauli expectation helper
+# ---------------------------------------------------------------------------
+
+def _expectation_pauli_term(state: "mx.array", pauli: str, n: int) -> float:
+    """Compute ⟨ψ|P|ψ⟩ for a tensor-product Pauli string.
+
+    Parameters
+    ----------
+    state:
+        (2**n,) complex64 MLX statevector.
+    pauli:
+        Pauli string of length *n*, e.g. ``"ZXI"``.  Characters: I, X, Y, Z
+        (case-insensitive).
+    n:
+        Number of qubits.
+
+    Returns
+    -------
+    float
+        Real-valued expectation value.
+    """
+    from .simulator import apply_gate
+
+    _PAULI_X = mx.array([[0, 1], [1, 0]], dtype=mx.complex64)
+    _PAULI_Y = mx.array([[0, -1j], [1j, 0]], dtype=mx.complex64)
+    _PAULI_Z = mx.array([[1, 0], [0, -1]], dtype=mx.complex64)
+    _PAULI_MATS = {"X": _PAULI_X, "Y": _PAULI_Y, "Z": _PAULI_Z}
+
+    phi = state
+    for q, p in enumerate(pauli.upper()):
+        if p == "I":
+            continue
+        mat = _PAULI_MATS[p]
+        phi = apply_gate(phi, mat, [q], n)
+
+    mx.eval(state, phi)
+    psi_np = np.array(state.tolist(), dtype=np.complex64)
+    phi_np = np.array(phi.tolist(), dtype=np.complex64)
+    return float(np.dot(psi_np.conj(), phi_np).real)
+
+
+# ---------------------------------------------------------------------------
+# Job serialization helpers
+# ---------------------------------------------------------------------------
+
 def job_from_circuit(
     circuit,
     params: mx.array | list[float],
@@ -374,21 +445,34 @@ def job_from_circuit(
     """
     Serialize a Circuit into a SimJob for dispatch to a node.
 
+    Every gate in the circuit must have been constructed via a Circuit builder
+    method (c.h(), c.ry(), c.cnot(), etc.) so that GateOp.kind is set.
+    Circuits produced by circuit.fuse() cannot be serialized — call
+    job_from_circuit() before fuse().
+
     Args:
         circuit:    a zilver Circuit instance
         params:     parameter vector
         observable: "sum_z" | "z0"
         backend:    "sv" | "dm" | "tn"
     """
-    from .circuit import GateOp
-
     ops = []
     for op in circuit._ops:
-        # Determine gate type from gate_fn signature
-        # We rely on GateOp class methods having been called — reconstruct from param_indices
-        pidx = op.param_indices[0] if op.param_indices else None
-        kind = _infer_gate_kind(op, circuit)
-        ops.append({"type": kind, "qubits": op.qubits, "param_idx": pidx})
+        if not op.kind:
+            raise ValueError(
+                "GateOp has no kind — rebuild the circuit using Circuit builder "
+                "methods (c.h(), c.ry(), c.cnot(), …) instead of raw GateOp()."
+            )
+        if op.kind == "fused":
+            raise ValueError(
+                "Cannot serialize a fused circuit for remote execution. "
+                "Call job_from_circuit() before circuit.fuse()."
+            )
+        ops.append({
+            "type":          op.kind,
+            "qubits":        op.qubits,
+            "param_indices": op.param_indices,
+        })
 
     if isinstance(params, mx.array):
         params_list = params.tolist()
@@ -403,26 +487,3 @@ def job_from_circuit(
         observable  = observable,
         backend     = backend,
     )
-
-
-def _infer_gate_kind(op, circuit) -> str:
-    """
-    Heuristic: infer gate type from GateOp structure.
-    This is a best-effort reverse of the Circuit builder API.
-    Robust serialization would store kind explicitly in GateOp — future work.
-    """
-    n_qubits_op = len(op.qubits)
-    has_params   = bool(op.param_indices)
-
-    if n_qubits_op == 1 and not has_params:
-        # Fixed single-qubit: H or X (can't distinguish without inspecting matrix)
-        # Evaluate at identity params to check: H|0> has non-zero <X>, X|0> has <Z>=-1
-        return "h"   # conservative: caller should use explicit serialization for production
-    if n_qubits_op == 1 and has_params:
-        # Parameterized: ry, rx, or rz — can't distinguish without matrix inspection
-        return "ry"  # conservative default
-    if n_qubits_op == 2 and not has_params:
-        return "cnot"
-    if n_qubits_op == 2 and has_params:
-        return "rzz"
-    return "h"
