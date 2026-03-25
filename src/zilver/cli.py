@@ -15,22 +15,59 @@ from pathlib import Path
 # Heartbeat daemon thread
 # ---------------------------------------------------------------------------
 
-def _start_heartbeat(reg_client: "RegistryClient", node_id: str, interval: int = 30) -> None:
-    """
-    Send periodic heartbeats to the registry from a background daemon thread.
+_HB_BACKOFF = [5, 10, 20, 40, 80, 120]
 
-    The thread is marked as a daemon so it is killed automatically when the
-    main process exits.  ``interval`` is the sleep duration in seconds between
-    heartbeat calls.  Failures are silently swallowed — a transient registry
-    outage should not crash the node.
+
+def _start_heartbeat(
+    reg_client:        "RegistryClient",
+    node_id:           str,
+    node_url:          str,
+    caps:              "NodeCapabilities",
+    interval:          int = 30,
+    private_key_bytes: "bytes | None" = None,
+    public_key_bytes:  "bytes | None" = None,
+    se_label:          "str | None"   = None,
+) -> None:
     """
+    Background daemon thread: heartbeat with auto-reconnect.
+
+    - 404 from registry  → node was dropped (e.g. registry restart); re-register
+      immediately and update the stored API key.
+    - Connection error   → exponential backoff before the next attempt; resets
+      on the first successful heartbeat.
+    """
+    def _reregister() -> None:
+        try:
+            reg_client.register(
+                caps, node_url,
+                private_key_bytes=private_key_bytes,
+                public_key_bytes=public_key_bytes,
+                se_label=se_label,
+            )
+            new_key = reg_client.last_api_key
+            if new_key:
+                reg_client.api_key = new_key
+                try:
+                    from . import _node_ops
+                    _node_ops.store_api_key(node_id, new_key)
+                except Exception:
+                    pass
+        except Exception:
+            pass  # will retry on next heartbeat cycle
+
     def _loop() -> None:
+        backoff_idx = 0
         while True:
             time.sleep(interval)
             try:
-                reg_client.heartbeat(node_id)
+                found = reg_client.heartbeat(node_id)
+                backoff_idx = 0
+                if not found:
+                    _reregister()
             except Exception:
-                pass  # transient failure — next tick will retry
+                extra = _HB_BACKOFF[min(backoff_idx, len(_HB_BACKOFF) - 1)]
+                backoff_idx += 1
+                time.sleep(extra)
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
@@ -139,9 +176,27 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
     ssl_key, ssl_cert = _resolve_tls(args)
     scheme = "https" if ssl_cert else "http"
 
-    # Construct the URL this node will advertise to the registry
-    advertised_host = args.host if args.host != "0.0.0.0" else _local_ip()
-    node_url = f"{scheme}://{advertised_host}:{args.port}"
+    # Construct the URL this node will advertise to the registry.
+    # --public-url takes precedence; otherwise fall back to detected LAN IP.
+    public_url = getattr(args, "public_url", None)
+    if public_url:
+        node_url = public_url.rstrip("/")
+    else:
+        advertised_host = args.host if args.host != "0.0.0.0" else _local_ip()
+        node_url = f"{scheme}://{advertised_host}:{args.port}"
+        import ipaddress, urllib.parse as _up
+        try:
+            _h = _up.urlparse(node_url).hostname or ""
+            _a = ipaddress.ip_address(_h)
+            if _a.is_private or _a.is_loopback:
+                print(
+                    f"Warning: advertised URL {node_url!r} is a private address — "
+                    "external clients cannot reach this node.\n"
+                    "Use --public-url <url> to set a reachable address.",
+                    file=sys.stderr,
+                )
+        except ValueError:
+            pass
 
     # --- API key ------------------------------------------------------------
     api_key: str | None = getattr(args, "api_key", None)
@@ -195,7 +250,12 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
                 reg_client.api_key = api_key
 
             print(f"Registered with registry at {args.registry}")
-            _start_heartbeat(reg_client, node.caps.node_id)
+            _start_heartbeat(
+                reg_client, node.caps.node_id, node_url, node.caps,
+                private_key_bytes=private_key_bytes,
+                public_key_bytes=public_key_bytes,
+                se_label=_se_label,
+            )
         except Exception as exc:
             print(f"Warning: could not register with registry: {exc}", file=sys.stderr)
 
@@ -443,9 +503,12 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
     """Start an in-memory capability registry server."""
     from .registry_server import serve_registry
 
-    admin_key       = getattr(args, "admin_key",       None) or os.environ.get("ZILVER_REGISTRY_KEY")
-    ledger_path     = getattr(args, "ledger_path",     None) or os.environ.get("ZILVER_LEDGER_PATH")
-    require_signed  = getattr(args, "require_signed",  False)
+    admin_key          = getattr(args, "admin_key",          None) or os.environ.get("ZILVER_REGISTRY_KEY")
+    ledger_path        = getattr(args, "ledger_path",        None) or os.environ.get("ZILVER_LEDGER_PATH")
+    db_path            = getattr(args, "db_path",            None) or os.environ.get("ZILVER_DB_PATH")
+    audit_log_path     = getattr(args, "audit_log_path",     None) or os.environ.get("ZILVER_AUDIT_LOG")
+    require_signed     = getattr(args, "require_signed",     False)
+    allow_private_urls = getattr(args, "allow_private_urls", False)
 
     # Load node allowlist from file (one pubkey hex per line, # comments allowed)
     allowed_pubkeys: set[str] | None = None
@@ -483,6 +546,12 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
 
     if ledger_path:
         print(f"SQT ledger: {ledger_path}")
+    if db_path:
+        print(f"Registry DB: {db_path}")
+    if audit_log_path:
+        print(f"Audit log: {audit_log_path}")
+    if allow_private_urls:
+        print("Warning: private URL registration allowed (dev mode).", file=sys.stderr)
 
     proto = "HTTPS" if ssl_cert else "HTTP (no TLS)"
     print(f"Registry server {proto} on {args.host}:{args.port}  (Ctrl-C to stop)")
@@ -501,6 +570,9 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
         require_signed=require_signed,
         allowed_pubkeys=allowed_pubkeys,
         client_keys=client_keys,
+        db_path=db_path,
+        allow_private_urls=allow_private_urls,
+        audit_log_path=audit_log_path,
     )
 
 
@@ -571,6 +643,12 @@ def _build_node_parser() -> argparse.ArgumentParser:
         "--api-key", dest="api_key", default=None,
         help="API key issued by the registry. "
              "If omitted, reads from Keychain or registers automatically.",
+    )
+    p_start.add_argument(
+        "--public-url", dest="public_url", default=None,
+        help="Externally reachable URL for this node "
+             "(e.g. https://your-tunnel.example.com). "
+             "Required when the node is behind NAT or a Cloudflare Tunnel.",
     )
 
     # --- status -------------------------------------------------------------
@@ -660,6 +738,23 @@ def _build_registry_parser() -> argparse.ArgumentParser:
         "--client-keys-file", dest="client_keys_file", default=None,
         help="Path to file of authorized client API keys (one key per line). "
              "Required for /match and job submission. Also read from ZILVER_CLIENT_KEYS_FILE.",
+    )
+    p_start.add_argument(
+        "--db-path", dest="db_path", default=None,
+        help="Path to SQLite registry database (e.g. /var/lib/zilver/registry.db). "
+             "Node registrations persist across restarts. Also read from ZILVER_DB_PATH.",
+    )
+    p_start.add_argument(
+        "--allow-private-urls", dest="allow_private_urls",
+        action="store_true", default=False,
+        help="Allow nodes to register with private/loopback URLs. "
+             "For local development only — do not use in production.",
+    )
+    p_start.add_argument(
+        "--audit-log", dest="audit_log_path", default=None,
+        help="Path to append-only JSONL audit log "
+             "(e.g. /var/log/zilver/audit.jsonl). "
+             "Also read from ZILVER_AUDIT_LOG.",
     )
 
     return parser
