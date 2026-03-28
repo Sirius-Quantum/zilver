@@ -22,11 +22,18 @@ Node operators require approval before joining the network. Open an issue at [gi
 ## Install and run
 
 ```bash
-pip install zilver[network]
+brew tap sirius-quantum/zilver
+brew install zilver
 zilver-node start --registry https://registry.siriusquantum.com --backends sv,dm
 ```
 
 On first run your node identity and credentials are generated and stored in macOS Keychain. Subsequent starts reuse them automatically.
+
+To start your node automatically at login:
+
+```bash
+brew services start zilver
+```
 
 ---
 
