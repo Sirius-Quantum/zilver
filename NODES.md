@@ -37,6 +37,20 @@ brew services start zilver
 
 ---
 
+## Public URL
+
+Your node must be reachable from the internet. Pass your public URL at startup:
+
+```bash
+zilver-node start \
+  --registry https://registry.siriusquantum.com \
+  --public-url https://your-public-address.com
+```
+
+If your Mac is on a home network, enable port forwarding on your router for port 7700, or use a VPS proxy.
+
+---
+
 ## Flags
 
 | Flag | Default | Description |
@@ -44,6 +58,7 @@ brew services start zilver
 | `--backends` | `sv` | Backends to enable: `sv`, `dm`, `tn`, or any combination |
 | `--port` | `7700` | Port to listen on |
 | `--registry` | — | Registry URL |
+| `--public-url` | — | Publicly reachable URL for this node |
 | `--wallet` | — | Wallet address for future reward settlement |
 
 ---
