@@ -34,7 +34,7 @@ def param_shift_gradient(
     params_minus = params[None, :] - shift * eye   # (P, P)
     all_params = mx.concatenate([params_plus, params_minus], axis=0)  # (2P, P)
 
-    all_evals = mx.vmap(f)(all_params)  # (2P,)
+    all_evals = mx.vmap(mx.compile(f))(all_params)  # (2P,)
     grads = 0.5 * (all_evals[:P] - all_evals[P:])
     mx.eval(grads)
     return grads

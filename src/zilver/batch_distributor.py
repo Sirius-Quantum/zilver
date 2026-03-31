@@ -119,7 +119,7 @@ def run_local_batch(
     n_evals = params_batch.shape[0]
     t0 = time.perf_counter()
 
-    fn = circuit.compile(observable)
+    fn  = mx.compile(circuit.compile(observable))
     out = mx.vmap(fn)(params_batch)  # (N,)
     mx.eval(out)
 
@@ -265,7 +265,7 @@ class BatchDistributor:
         k = len(nodes)
         index_slices = _split_indices(n_evals, k)
 
-        fn = circuit.compile(observable)
+        fn = mx.compile(circuit.compile(observable))
         t0 = time.perf_counter()
 
         result_slices: list[BatchSlice] = []
@@ -411,7 +411,7 @@ class CutBatchDistributor:
 
         k = len(nodes)
         index_slices = _split_indices(n_evals, k)
-        fn = circuit.compile(observable)
+        fn = mx.compile(circuit.compile(observable))
 
         chunks: list[mx.array] = []
         for node_entry, (start, end) in zip(nodes, index_slices):

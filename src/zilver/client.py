@@ -533,114 +533,14 @@ class NetworkCoordinator:
         self,
         circuit: Any,
         params_batch: Any,
-        backend:    str = "sv",
+        backend: str = "sv",
         observable: str = "sum_z",
-    ) -> BatchResult:
-        """
-        Evaluate a circuit at N parameter sets, distributed across online nodes.
-
-        Queries the registry for all eligible nodes, splits ``params_batch``
-        evenly across them, submits each slice as a :class:`~zilver.node.SimJob`
-        with a single parameter set (one job per row), and assembles the
-        results in original order.
-
-        Parameters
-        ----------
-        circuit:
-            A :class:`~zilver.circuit.Circuit` instance.
-        params_batch:
-            An ``(N, n_params)`` MLX array of parameter vectors.
-        backend:
-            Simulator backend: ``"sv"``, ``"dm"``, or ``"tn"``.
-        observable:
-            Observable to measure: ``"sum_z"`` or ``"z0"``.
-
-        Returns
-        -------
-        BatchResult
-            ``expectations[i]`` is the expectation value for ``params_batch[i]``.
-
-        Raises
-        ------
-        RuntimeError
-            If no eligible node is available.
-
-        Notes
-        -----
-        Each parameter set is submitted as a separate :class:`~zilver.node.SimJob`.
-        For large batches on a high-latency network, using the local
-        :func:`~zilver.batch_distributor.run_local_batch` is faster because
-        it dispatches all evaluations in a single Metal vmap call.
-        This method is intended for genuinely distributed hardware where
-        each node runs the job on different physical silicon.
-        """
-        import numpy as np
-        from .node import job_from_circuit
-        from .batch_distributor import _split_indices
-
-        if hasattr(params_batch, 'ndim') and params_batch.ndim == 1:
-            params_batch = params_batch[None, :]
-
-        n_evals = params_batch.shape[0]
-
-        # Discover all eligible nodes up front
-        all_nodes_info = self._registry.nodes()
-        eligible = [
-            n for n in all_nodes_info
-            if backend in n.get("backends", [])
-            and n.get(f"{backend}_qubits_max", 0) >= circuit.n_qubits
-        ]
-        if not eligible:
-            raise RuntimeError(
-                f"No eligible node for backend={backend!r} "
-                f"n_qubits={circuit.n_qubits}"
-            )
-
-        k = len(eligible)
-        index_slices = _split_indices(n_evals, k)
-
-        t0 = time.perf_counter()
-        all_expectations: list[float] = [0.0] * n_evals
-        result_slices: list[BatchSlice] = []
-
-        for node_info, (start, end) in zip(eligible, index_slices):
-            if start == end:
-                continue
-
-            node_url         = node_info.get("url", "")
-            node_id          = node_info.get("node_id", "unknown")
-            node_execute_key = node_info.get("node_execute_key") or self.api_key
-
-            ts = time.perf_counter()
-            slice_expectations: list[float] = []
-
-            with NodeClient(node_url, timeout=self.timeout, api_key=node_execute_key) as nc:
-                for i in range(start, end):
-                    import mlx.core as mx
-                    row = params_batch[i]
-                    job = job_from_circuit(circuit, row, observable=observable, backend=backend)
-                    result = nc.execute(job)
-                    slice_expectations.append(result.expectation)
-
-            slice_ms = (time.perf_counter() - ts) * 1000.0
-            for i, val in enumerate(slice_expectations):
-                all_expectations[start + i] = val
-
-            result_slices.append(BatchSlice(
-                node_id=node_id,
-                start=start,
-                end=end,
-                expectations=slice_expectations,
-                elapsed_ms=slice_ms,
-            ))
-
-        elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        return BatchResult(
-            expectations=all_expectations,
-            n_evals=n_evals,
-            n_nodes_used=len(result_slices),
-            slices=result_slices,
-            elapsed_ms=elapsed_ms,
+        **kwargs,
+    ) -> "BatchResult":
+        """Evaluate a circuit at N parameter sets across available nodes."""
+        from . import _batch_ops
+        return _batch_ops.submit_batch(
+            self, circuit, params_batch, backend, observable, **kwargs
         )
 
     def nodes(self) -> list[dict[str, Any]]:

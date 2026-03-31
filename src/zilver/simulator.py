@@ -44,15 +44,24 @@ class StateVector:
         return f"StateVector(n_qubits={self.n_qubits})"
 
 
-def apply_gate(state: mx.array, gate: mx.array, qubits: Sequence[int], n: int) -> mx.array:
+def apply_gate(
+    state: mx.array,
+    gate: mx.array,
+    qubits: Sequence[int],
+    n: int,
+    stream: mx.Stream | mx.Device = mx.gpu,
+) -> mx.array:
     """
     Apply a k-qubit unitary gate to a statevector.
 
     Args:
-        state: (2**n,) complex64 statevector.
-        gate:  (2**k, 2**k) complex64 unitary.
+        state:  (2**n,) complex64 statevector.
+        gate:   (2**k, 2**k) complex64 unitary.
         qubits: Target qubit indices (0 = most significant).
-        n:     Total number of qubits.
+        n:      Total number of qubits.
+        stream: MLX stream or device for the matmul. Defaults to ``mx.gpu``
+                (compute-dense; use ``mx.cpu`` for small circuits where GPU
+                dispatch overhead dominates).
 
     Returns:
         Updated (2**n,) complex64 statevector.
@@ -75,7 +84,7 @@ def apply_gate(state: mx.array, gate: mx.array, qubits: Sequence[int], n: int) -
     tensor = tensor.reshape(2**k, 2**(n - k))
 
     # Gate application: (2^k, 2^k) @ (2^k, 2^(n-k)) -> (2^k, 2^(n-k))
-    tensor = gate @ tensor
+    tensor = mx.matmul(gate, tensor, stream=stream)
 
     # Reshape and permute back
     tensor = tensor.reshape([2] * n)
@@ -88,13 +97,15 @@ def expectation_z(state: mx.array, qubit: int, n: int) -> mx.array:
     Compute <Z_q> = <psi|Z_q|psi> for a single qubit.
 
     Eigenvalue of Z_q is +1 if the q-th bit of basis index is 0, else -1.
+    Runs on CPU — elementwise ops over the probability vector are
+    overhead-bound on the GPU for typical circuit sizes.
     """
-    probs = mx.abs(state) ** 2
-    indices = mx.arange(2**n)
+    probs = mx.abs(state, stream=mx.cpu) ** 2
+    indices = mx.arange(2**n, stream=mx.cpu)
     # Bit q in big-endian ordering: shift right by (n - 1 - q)
     bit = (indices >> (n - 1 - qubit)) & 1
     signs = mx.array(1, dtype=mx.float32) - 2 * bit.astype(mx.float32)
-    return mx.sum(signs * probs.real)
+    return mx.sum(signs * probs.real, stream=mx.cpu)
 
 
 def expectation_pauli_sum(state: mx.array, n: int, weights: Sequence[float] | None = None) -> mx.array:
@@ -111,10 +122,10 @@ def expectation_pauli_sum(state: mx.array, n: int, weights: Sequence[float] | No
 
 def expectation_zz(state: mx.array, qubit_a: int, qubit_b: int, n: int) -> mx.array:
     """<Z_a Z_b> two-qubit Pauli correlator."""
-    probs = mx.abs(state) ** 2
-    indices = mx.arange(2**n)
+    probs = mx.abs(state, stream=mx.cpu) ** 2
+    indices = mx.arange(2**n, stream=mx.cpu)
     bit_a = (indices >> (n - 1 - qubit_a)) & 1
     bit_b = (indices >> (n - 1 - qubit_b)) & 1
     # ZZ eigenvalue: +1 if bits agree, -1 if differ
     signs = (1 - 2 * bit_a.astype(mx.float32)) * (1 - 2 * bit_b.astype(mx.float32))
-    return mx.sum(signs * probs.real)
+    return mx.sum(signs * probs.real, stream=mx.cpu)
