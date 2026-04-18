@@ -28,7 +28,7 @@ except ImportError:
     param_shift_gradient = param_shift_gradient_batched = None  # type: ignore[assignment]
     LossLandscape = LandscapeResult = gates = None              # type: ignore[assignment,misc]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __all__ = [
     # Core simulation
     "Circuit",

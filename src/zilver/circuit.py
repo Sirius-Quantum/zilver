@@ -325,6 +325,42 @@ class Circuit:
         mx.eval(state)
         return StateVector.from_array(state, self.n_qubits)
 
+    def statevector_batch(self, params_batch: mx.array) -> mx.array:
+        """Execute circuit for a batch of parameter vectors using mx.vmap.
+
+        All circuits run in a single Metal dispatch — no Python loop overhead.
+
+        Args:
+            params_batch: (m, n_params) float32 — one parameter vector per sample.
+
+        Returns:
+            (m, 2^n_qubits) complex64 array of statevectors, on-device.
+        """
+        batched = mx.vmap(self._run)
+        states = batched(params_batch)
+        mx.eval(states)
+        return states
+
+    def fidelity_kernel(self, params_batch: mx.array) -> np.ndarray:
+        """Compute fidelity kernel K[i,j] = |<psi_i|psi_j>|^2 for all pairs.
+
+        Stays on-device throughout — no per-sample CPU round-trips.
+        Equivalent to the Hilbert-Schmidt fidelity between quantum states.
+
+        Args:
+            params_batch: (m, n_params) float32 — one parameter vector per sample.
+
+        Returns:
+            (m, m) float32 numpy kernel matrix. Diagonal is all 1.0.
+        """
+        psis = self.statevector_batch(params_batch)          # (m, 2^n) complex64
+        conj_psis = mx.conj(psis)                            # (m, 2^n) complex64
+        overlaps = mx.matmul(conj_psis, psis.T)              # (m, m) complex64
+        # |z|^2 = re^2 + im^2 — avoids mx.abs on complex
+        K = mx.real(overlaps) ** 2 + mx.imag(overlaps) ** 2 # (m, m) float32
+        mx.eval(K)
+        return np.array(K.tolist(), dtype=np.float32)
+
     def __repr__(self) -> str:
         return f"Circuit(n_qubits={self.n_qubits}, n_params={self.n_params}, n_ops={len(self._ops)})"
 
