@@ -20,7 +20,12 @@ Statevector, density matrix, and tensor network backends.
 
 Got an Apple Silicon Mac? You can contribute compute to the network.
 
-See [NODES.md](NODES.md) for requirements and how to apply.
+```bash
+pip install "zilver[network]"
+zilver-node start --registry https://registry.siriusquantum.com
+```
+
+See [NODES.md](NODES.md) for full requirements and how to apply for operator approval.
 
 ---
 

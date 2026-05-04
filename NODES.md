@@ -23,22 +23,13 @@ Node operators require approval before joining the network. Open an issue at [gi
 ## Install and run
 
 ```bash
-brew tap sirius-quantum/zilver
-brew install zilver
+pip install "zilver[network]"
 zilver-node start --registry https://registry.siriusquantum.com --backends sv,dm
 ```
 
-The Homebrew formula installs all required dependencies, including the network stack (`fastapi`, `uvicorn`, `cryptography`). If you install via pip instead, use the `[network]` extra:
+The `[network]` extra installs all required dependencies (`fastapi`, `uvicorn`, `cryptography`). MLX is installed automatically as a core dependency — no separate download needed.
 
-```bash
-pip install "zilver[network]"
-```
-
-To start your node automatically at login:
-
-```bash
-brew services start zilver
-```
+To start your node automatically at login, add the `zilver-node start` command to your macOS Login Items or create a launchd plist.
 
 ---
 
