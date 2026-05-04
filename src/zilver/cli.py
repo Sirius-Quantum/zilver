@@ -609,46 +609,63 @@ def _build_node_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- start --------------------------------------------------------------
-    p_start = sub.add_parser("start", help="Start the node daemon.")
-    p_start.add_argument(
+    p_start = sub.add_parser(
+        "start",
+        help="Start the node daemon.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    grp_core = p_start.add_argument_group("core")
+    grp_core.add_argument(
         "--backends", default="sv",
-        help="Comma-separated list of backends to enable: sv,dm,tn (default: sv).",
+        help="Backends to enable: sv, dm, tn, or any comma-separated combination.",
     )
-    p_start.add_argument(
+    grp_core.add_argument(
         "--port", type=int, default=7700,
-        help="TCP port to listen on (default: 7700).",
+        help="TCP port to listen on.",
     )
-    p_start.add_argument(
+    grp_core.add_argument(
         "--host", default="0.0.0.0",
-        help="Interface to bind (default: 0.0.0.0).",
+        help="Interface to bind.",
     )
-    p_start.add_argument(
+
+    grp_net = p_start.add_argument_group(
+        "network mode",
+        "Connect to a registry and contribute jobs to the network. "
+        "Omit --registry to run in standalone mode (local simulation only).",
+    )
+    grp_net.add_argument(
         "--registry", default=None,
-        help="Registry server URL, e.g. https://host:7701. "
-             "Omit to run standalone without registry registration.",
+        help="Registry server URL, e.g. https://registry.siriusquantum.com.",
     )
-    p_start.add_argument(
-        "--wallet", default=None,
-        help="Wallet address for future reward settlement (stored, not yet used).",
-    )
-    p_start.add_argument(
-        "--ssl-cert", dest="ssl_cert", default=None,
-        help="Path to TLS certificate (PEM). Auto-generates self-signed if omitted.",
-    )
-    p_start.add_argument(
-        "--ssl-key", dest="ssl_key", default=None,
-        help="Path to TLS private key (PEM). Must be paired with --ssl-cert.",
-    )
-    p_start.add_argument(
-        "--api-key", dest="api_key", default=None,
-        help="API key issued by the registry. "
-             "If omitted, reads from Keychain or registers automatically.",
-    )
-    p_start.add_argument(
+    grp_net.add_argument(
         "--public-url", dest="public_url", default=None,
         help="Externally reachable URL for this node "
              "(e.g. https://your-tunnel.example.com). "
-             "Required when the node is behind NAT or a Cloudflare Tunnel.",
+             "Required when behind NAT or a Cloudflare Tunnel.",
+    )
+    grp_net.add_argument(
+        "--wallet", default=None,
+        help="Wallet address for future reward settlement.",
+    )
+    grp_net.add_argument(
+        "--api-key", dest="api_key", default=None,
+        help="API key issued by the registry. "
+             "If omitted, loaded from Keychain or obtained automatically on first run.",
+    )
+
+    grp_tls = p_start.add_argument_group(
+        "TLS",
+        "Custom certificate paths. If omitted, a self-signed certificate is "
+        "auto-generated to ~/.zilver/node.{key,crt} on first run.",
+    )
+    grp_tls.add_argument(
+        "--ssl-cert", dest="ssl_cert", default=None,
+        help="Path to TLS certificate (PEM).",
+    )
+    grp_tls.add_argument(
+        "--ssl-key", dest="ssl_key", default=None,
+        help="Path to TLS private key (PEM). Must be paired with --ssl-cert.",
     )
 
     # --- status -------------------------------------------------------------

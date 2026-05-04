@@ -27,13 +27,27 @@ brew install zilver
 zilver-node start --registry https://registry.siriusquantum.com --backends sv,dm
 ```
 
-On first run your node identity and credentials are generated and stored in macOS Keychain. Subsequent starts reuse them automatically.
+The Homebrew formula installs all required dependencies, including the network stack (`fastapi`, `uvicorn`, `cryptography`). If you install via pip instead, use the `[network]` extra:
+
+```bash
+pip install "zilver[network]"
+```
 
 To start your node automatically at login:
 
 ```bash
 brew services start zilver
 ```
+
+---
+
+## Identity and credentials
+
+On first run, a hardware-bound node identity is generated and your credentials are stored in macOS Keychain. Subsequent starts reuse them automatically — no manual key management needed.
+
+**Moving to a new Mac:** node identity is hardware-bound and cannot be transferred. On a new machine, `zilver-node start` generates a fresh identity. Contact the Sirius Quantum team to migrate your operator approval to the new node pubkey.
+
+**If Keychain is wiped:** the node will re-register with a new API key on next start. Your node's contribution history is preserved by node ID, not by credentials.
 
 ---
 
@@ -47,7 +61,12 @@ zilver-node start \
   --public-url https://your-public-address.com
 ```
 
-If your Mac is on a home network, enable port forwarding on your router for port 7700, or use a VPS proxy.
+If your Mac is on a home network, use one of these options:
+
+- **Port forwarding** — forward port 7700 on your router to your Mac's LAN IP
+- **Cloudflare Tunnel** — `cloudflared tunnel --url http://localhost:7700` (free, no open port needed)
+- **ngrok** — `ngrok http 7700` (free tier available)
+- **VPS proxy** — nginx or Caddy reverse proxy on a cheap VPS
 
 ---
 

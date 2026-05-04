@@ -26,7 +26,7 @@ See [NODES.md](NODES.md) for requirements and how to apply.
 
 Researchers and AI labs can submit quantum simulation jobs to the network via API. No infrastructure required — bring your circuit, we handle the compute.
 
-To request API access, open an issue at [github.com/Sirius-Quantum/zilver](https://github.com/Sirius-Quantum/zilver) with your use case and institution.
+To request API access, open an issue at [github.com/Sirius-Quantum/zilver](https://github.com/Sirius-Quantum/zilver) with your use case and institution. Once approved you will receive a client API key and the registry endpoint.
 
 ```python
 from zilver.client import NetworkCoordinator
