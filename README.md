@@ -10,7 +10,9 @@
 
 Zilver turns your Apple Silicon Mac into a quantum simulation node.
 
-Built on [MLX](https://github.com/ml-explore/mlx). Statevector, density matrix, and tensor network backends.
+Built on [MLX](https://github.com/ml-explore/mlx) — Apple's machine learning framework for macOS. Requires an Apple Silicon Mac (M1 or later) running macOS. MLX uses Apple's Metal GPU and unified memory architecture; it does not run on Linux, Windows, or Intel Macs.
+
+Statevector, density matrix, and tensor network backends.
 
 ---
 
@@ -50,11 +52,13 @@ print(result.verify(job))   # True
 
 ## Local simulation
 
-Use Zilver as a standalone MLX-native quantum simulator on any Apple Silicon Mac — no network required.
+Use Zilver as a standalone quantum simulator on any Apple Silicon Mac — no network or account required.
 
 ```bash
 pip install zilver
 ```
+
+MLX is installed automatically as a dependency. No separate download needed.
 
 ```python
 from zilver.circuit import hardware_efficient

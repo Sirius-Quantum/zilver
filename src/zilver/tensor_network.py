@@ -441,8 +441,10 @@ def hardware_efficient_mps(n_qubits: int, depth: int, chi_max: int = 64) -> MPSC
     p = 0
     for layer in range(depth + 1):
         for q in range(n_qubits):
-            c.ry(q, p); p += 1
-            c.rz(q, p); p += 1
+            c.ry(q, p)
+            p += 1
+            c.rz(q, p)
+            p += 1
         if layer < depth:
             for q in range(n_qubits - 1):
                 c.cnot(q, q + 1)
@@ -457,8 +459,10 @@ def qaoa_style_mps(n_qubits: int, depth: int, chi_max: int = 64) -> MPSCircuit:
         c.h(q)
     p = 0
     for _ in range(depth):
-        gamma_idx = p; p += 1
-        beta_idx  = p; p += 1
+        gamma_idx = p
+        p += 1
+        beta_idx  = p
+        p += 1
         for q in range(n_qubits - 1):
             c.rzz(q, q + 1, gamma_idx)
         for q in range(n_qubits):

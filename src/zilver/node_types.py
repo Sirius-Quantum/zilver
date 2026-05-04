@@ -14,7 +14,6 @@ import platform
 import subprocess
 import uuid
 from dataclasses import dataclass, field, asdict
-from typing import Any
 
 
 # ---------------------------------------------------------------------------

@@ -377,8 +377,10 @@ def hardware_efficient(n_qubits: int, depth: int, entanglement: str = "linear") 
     p = 0
     for layer in range(depth + 1):
         for q in range(n_qubits):
-            c.ry(q, p); p += 1
-            c.rz(q, p); p += 1
+            c.ry(q, p)
+            p += 1
+            c.rz(q, p)
+            p += 1
         if layer < depth:
             _add_entanglement(c, n_qubits, entanglement)
     c.n_params = p
@@ -394,7 +396,8 @@ def real_amplitudes(n_qubits: int, depth: int, entanglement: str = "linear") -> 
     p = 0
     for layer in range(depth + 1):
         for q in range(n_qubits):
-            c.ry(q, p); p += 1
+            c.ry(q, p)
+            p += 1
         if layer < depth:
             _add_entanglement(c, n_qubits, entanglement)
     c.n_params = p
@@ -411,8 +414,10 @@ def qaoa_style(n_qubits: int, depth: int) -> Circuit:
         c.h(q)
     p = 0
     for layer in range(depth):
-        gamma_idx = p; p += 1
-        beta_idx  = p; p += 1
+        gamma_idx = p
+        p += 1
+        beta_idx  = p
+        p += 1
         for q in range(n_qubits - 1):
             c.rzz(q, q + 1, gamma_idx)
         for q in range(n_qubits):

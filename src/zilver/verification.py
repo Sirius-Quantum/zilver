@@ -5,10 +5,9 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-import mlx.core as mx
 import numpy as np
 
-from .node import Node, NodeCapabilities, SimJob, JobResult
+from .node import Node, SimJob, JobResult
 from .registry import Registry
 
 

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 import httpx
 
 from .node import NodeCapabilities, SimJob, JobResult
-from .batch_distributor import BatchResult, BatchSlice
+from .batch_distributor import BatchResult
 
 _log = logging.getLogger(__name__)
 

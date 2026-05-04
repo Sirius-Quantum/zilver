@@ -9,6 +9,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .client import RegistryClient
+    from .node import NodeCapabilities
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +189,8 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
     else:
         advertised_host = args.host if args.host != "0.0.0.0" else _local_ip()
         node_url = f"{scheme}://{advertised_host}:{args.port}"
-        import ipaddress, urllib.parse as _up
+        import ipaddress
+        import urllib.parse as _up
         try:
             _h = _up.urlparse(node_url).hostname or ""
             _a = ipaddress.ip_address(_h)
@@ -314,7 +320,6 @@ def _cmd_node_dashboard(args: argparse.Namespace) -> None:
     from rich.live import Live
     from rich.table import Table
     from rich.panel import Panel
-    from rich.text import Text
     from rich import box
 
     from .client import RegistryClient
@@ -516,8 +521,8 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
     if allowed_pubkeys_file:
         try:
             lines = Path(allowed_pubkeys_file).read_text().splitlines()
-            allowed_pubkeys = {l.strip().split("#")[0].strip() for l in lines
-                               if l.strip() and not l.strip().startswith("#")}
+            allowed_pubkeys = {line.strip().split("#")[0].strip() for line in lines
+                               if line.strip() and not line.strip().startswith("#")}
             allowed_pubkeys.discard("")
             print(f"Node allowlist loaded: {len(allowed_pubkeys)} approved pubkey(s).")
         except Exception as exc:
@@ -529,8 +534,8 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
     if client_keys_file:
         try:
             lines = Path(client_keys_file).read_text().splitlines()
-            client_keys = {l.strip().split("#")[0].strip() for l in lines
-                           if l.strip() and not l.strip().startswith("#")}
+            client_keys = {line.strip().split("#")[0].strip() for line in lines
+                           if line.strip() and not line.strip().startswith("#")}
             client_keys.discard("")
             print(f"Client key auth enabled: {len(client_keys)} authorized client(s).")
         except Exception as exc:

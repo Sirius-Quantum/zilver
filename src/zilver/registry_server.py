@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from .ledger import Ledger
 from .node_types import NodeCapabilities
@@ -327,7 +326,6 @@ def make_registry_app(
         - ``signature`` — hex-encoded signature over the canonical JSON of
           ``{caps, url, pubkey, timestamp}`` (sorted keys, no spaces)
         """
-        from datetime import timedelta
         try:
             caps = NodeCapabilities(**body["caps"])
             url: str = body["url"]

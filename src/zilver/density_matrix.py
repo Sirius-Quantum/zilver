@@ -7,7 +7,6 @@ import mlx.core as mx
 import numpy as np
 
 from . import gates as G
-from .simulator import apply_gate
 
 
 # ---------------------------------------------------------------------------

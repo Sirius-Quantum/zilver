@@ -4,7 +4,6 @@ from __future__ import annotations
 import re
 from .circuit import Circuit
 from . import gates as G
-import mlx.core as mx
 
 
 # Gates we know how to map; extend as needed.
@@ -43,8 +42,8 @@ def circuit_from_qasm(qasm_str: str) -> Circuit:
     Intended for hardware-efficient / RealAmplitudes / QAOA circuits as
     
     """
-    lines = [l.strip() for l in qasm_str.splitlines()]
-    lines = [l for l in lines if l and not l.startswith("//")]
+    lines = [line.strip() for line in qasm_str.splitlines()]
+    lines = [line for line in lines if line and not line.startswith("//")]
 
     n_qubits = _parse_n_qubits(lines)
     circuit = Circuit(n_qubits)

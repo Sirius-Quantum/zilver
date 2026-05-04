@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Callable
 import numpy as np
 import mlx.core as mx
 
 from .circuit import Circuit
-from . import gates as G
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +91,6 @@ def cnot_cut_terms(control: int, target: int) -> list[QPDTerm]:
     Expanded into 8 terms with all positive weights (using Pauli channel trick):
       c_i ∈ {+1/2, +1/2, +1/2, +1/2, +1/2, -1/2, +1/2, -1/2}
     """
-    Rx_half    = np.array([[np.cos(np.pi/4), -1j*np.sin(np.pi/4)],
-                            [-1j*np.sin(np.pi/4), np.cos(np.pi/4)]], dtype=np.complex64)
-    Rx_neg     = Rx_half.conj().T
-
     return [
         QPDTerm(weight=+0.5, left_ops=[(_I, control)],  right_ops=[(_I, target)]),
         QPDTerm(weight=+0.5, left_ops=[(_I, control)],  right_ops=[(_X, target)]),
@@ -312,7 +306,6 @@ def _build_subcircuit(
     Append extra_ops (QPD channel gates) at the boundary qubit.
     """
     from .circuit import GateOp
-    import mlx.core as mx
 
     sub = Circuit(n_qubits)
     sub.n_params = base.n_params

@@ -60,7 +60,8 @@ def param_shift_gradient_batched(
     simultaneously. Total circuit evaluations: 2 * B * P, all dispatched
     as one Metal kernel via nested vmap.
     """
-    grad_fn = lambda p: param_shift_gradient(f, p, shift)
+    def grad_fn(p: mx.array) -> mx.array:
+        return param_shift_gradient(f, p, shift)
     grads = mx.vmap(grad_fn)(params_batch)
     mx.eval(grads)
     return grads

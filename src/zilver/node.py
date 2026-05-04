@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 import mlx.core as mx
 import numpy as np
@@ -17,11 +16,10 @@ from .node_types import (
     _available_memory_bytes,
     _compute_proof,
     _compute_proof_v2,
-    _detect_hardware_uuid,
-    _detect_chip,
-    _detect_ram_gb,
-    _sv_qubit_ceiling,
-    _dm_qubit_ceiling,
+    _sv_qubit_ceiling,   # noqa: F401  (re-exported for tests and external callers)
+    _dm_qubit_ceiling,   # noqa: F401
+    _detect_chip,        # noqa: F401
+    _detect_ram_gb,      # noqa: F401
 )
 
 __all__ = [
@@ -345,7 +343,6 @@ class Node:
         return float(circuit.compile(job.observable)(params).item())
 
     def _run_dm(self, job: SimJob, params: mx.array) -> float:
-        from .density_matrix import NoisyCircuit, expectation_sum_z_dm, expectation_z_dm
         circuit = _build_circuit_from_ops(job.circuit_ops, job.n_qubits, job.n_params)
         # Re-use the sv circuit execution path; DM with no noise = sv
         return float(circuit.compile(job.observable)(params).item())
@@ -353,7 +350,6 @@ class Node:
     def _run_tn(self, job: SimJob, params: mx.array) -> float:
         from .tensor_network import MPSCircuit, expectation_sum_z_mps, expectation_z_mps
         c = MPSCircuit(job.n_qubits, chi_max=64)
-        params_np = np.array(job.params, dtype=np.float32)
         for op in job.circuit_ops:
             kind   = op["type"]
             qubits = op["qubits"]

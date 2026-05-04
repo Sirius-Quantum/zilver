@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Callable, Sequence
-import numpy as np
+from typing import Sequence
 import mlx.core as mx
 
-from .cutting import CutDecomposition, SubcircuitPair
+from .cutting import CutDecomposition
 
 
 # ---------------------------------------------------------------------------

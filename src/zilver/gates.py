@@ -7,7 +7,7 @@ import mlx.core as mx
 
 # Fixed single-qubit gates
 
-def I() -> mx.array:
+def I() -> mx.array:  # noqa: E743
     """Identity gate."""
     return mx.array([[1, 0], [0, 1]], dtype=mx.complex64)
 
@@ -155,8 +155,10 @@ def Toffoli() -> mx.array:
     |110> <-> |111>  (indices 6 <-> 7)
     """
     mat = np.eye(8, dtype=np.complex64)
-    mat[6, 6] = 0; mat[6, 7] = 1
-    mat[7, 7] = 0; mat[7, 6] = 1
+    mat[6, 6] = 0
+    mat[6, 7] = 1
+    mat[7, 7] = 0
+    mat[7, 6] = 1
     return mx.array(mat)
 
 def Fredkin() -> mx.array:
@@ -166,6 +168,8 @@ def Fredkin() -> mx.array:
     |101> <-> |110>  (indices 5 <-> 6)
     """
     mat = np.eye(8, dtype=np.complex64)
-    mat[5, 5] = 0; mat[5, 6] = 1
-    mat[6, 6] = 0; mat[6, 5] = 1
+    mat[5, 5] = 0
+    mat[5, 6] = 1
+    mat[6, 6] = 0
+    mat[6, 5] = 1
     return mx.array(mat)

@@ -6,10 +6,11 @@ Run a Zilver simulation node on your Apple Silicon Mac and contribute compute to
 
 ## Requirements
 
-- Apple Silicon Mac (M1 or later)
-- macOS 13 Ventura or later
+- Apple Silicon Mac (M1 or later) running macOS 13 Ventura or later
 - Python 3.10, 3.11, or 3.12
 - At least 8 GB unified memory
+
+Zilver runs on macOS only. The simulation engine is built on [MLX](https://github.com/ml-explore/mlx), which requires Apple's Metal GPU framework and unified memory architecture. Linux, Windows, and Intel Macs are not supported.
 
 ---
 

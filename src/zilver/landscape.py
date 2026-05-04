@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
 import time
 import mlx.core as mx
 import numpy as np
 
-from .gradients import param_shift_gradient, gradient_magnitude
 
 
 @dataclass
@@ -122,7 +120,6 @@ class LossLandscape:
         losses_np = np.array(all_losses.tolist(), dtype=np.float32).reshape(R, R)
         grads_np  = np.array(all_grads.tolist(),  dtype=np.float32).reshape(R, R)
 
-        axis = np.linspace(-np.pi, np.pi, R)
         p0_name = f"param_{p0_idx}"
         p1_name = f"param_{p1_idx}"
 
