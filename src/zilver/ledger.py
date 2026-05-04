@@ -14,8 +14,8 @@ _GENESIS_CUTOFF = datetime(2026, 5, 1, tzinfo=timezone.utc)
 _GENESIS_MAX_INDEX = 100
 
 _BASE_JOB_REWARD    = 0.001
-_job_time_rate      = 0.000_001   # per ms
-_job_memory_rate    = 0.000_005   # per MB
+_job_time_rate      = 0.000_001
+_job_memory_rate    = 0.000_005
 _HEARTBEAT_REWARD   = 0.000_1
 _GENESIS_MULTIPLIER = 2.0
 

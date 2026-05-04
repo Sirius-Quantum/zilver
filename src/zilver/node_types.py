@@ -40,7 +40,7 @@ def estimate_memory_bytes(n_qubits: int, backend: str, chi_max: int = 64) -> int
         Estimated bytes.  Exact for sv/dm (complex64 arrays);
         approximate for tn (scales with bond dimension, not exponentially).
     """
-    if backend in ("sv", "tn") and backend != "tn":
+    if backend == "sv":
         # Statevector: (2^n,) complex64 = 8 bytes per element
         return 8 * (2 ** n_qubits)
     if backend == "dm":

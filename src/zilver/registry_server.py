@@ -161,7 +161,7 @@ def make_registry_app(
     node_urls:      dict[str, str] = {}
     # Maps node_id → issued API key for identity verification.
     node_keys:      dict[str, str] = {}
-            # Maps node_id → registered public key (hex).
+    # Maps node_id → registered public key (hex).
     node_pubkeys:   dict[str, str] = {}
     # Maps pubkey_hex → node_id — enforces one slot per keypair.
     pubkey_node_ids: dict[str, str] = {}
@@ -349,9 +349,7 @@ def make_registry_app(
             timestamp_str = body.get("timestamp", "")
             signature_hex = body.get("signature", "")
 
-            # Detect key type from pubkey length:
-            
-            
+            # Detect key type from pubkey length.
             pubkey_len = len(pubkey_hex)
             if pubkey_len == 64:
                 key_type = "ed25519"

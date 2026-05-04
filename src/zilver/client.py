@@ -218,8 +218,8 @@ class RegistryClient:
         public_key_bytes:
             Raw public key bytes.
         se_label:
-            Secure hardware key label.  When set, signing
-            uses the SE key and ``private_key_bytes`` is ignored.
+            hardware key label.  When set, signing uses the hardware
+            key and ``private_key_bytes`` is ignored.
 
         Returns
         -------
