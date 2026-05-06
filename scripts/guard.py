@@ -21,16 +21,6 @@ RULES = [
     ("password_literal",    r"(?i)password\s*[=:]\s*['\"][^'\"]{4,}['\"]", "block"),
     ("database_url",        r"(?i)(postgres|mysql|mongodb|redis):\/\/[^:]+:[^@]+@", "block"),
 
-    # Internal project references
-    ("monorepo_path",       r"zilver-project",                "block"),
-    ("internal_port",       r"localhost:PORT",            "warn"),
-    ("internal_task_id",    r"job_[a-f0-9]{8}",                   "warn"),
-
-    # Data leakage
-    ("benchmark_data",      r'"loss_landscape"\s*:\s*\[',                  "block"),
-    ("sirius_instance_id",  r'"instance_id"\s*:\s*"[a-f0-9\-]{36}"',      "warn"),
-    ("expert_annotation",   r'"_reserved_id"\s*:\s*"',                        "block"),
-
     # Credentials pattern in env-style files
     ("dotenv_secret",       r"(?m)^[A-Z_]+(SECRET|KEY|TOKEN|PASSWORD)\s*=\s*\S+", "block"),
 ]

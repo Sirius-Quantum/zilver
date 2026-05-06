@@ -13,7 +13,7 @@ class LandscapeResult:
     """
     Output of a LossLandscape.compute() call.
 
-    Matches the output format:
+    Fields:
         loss_landscape:     List[List[float]]  (resolution x resolution)
         gradient_landscape: List[List[float]]  (resolution x resolution)
         parameter_names:    List[str]
@@ -169,8 +169,7 @@ def landscape_from_qasm(
     fixed_params: np.ndarray | None = None,
 ) -> LandscapeResult:
     """
-    Convenience function: parse a QASM string and compute the landscape.
-    Bridges the QASM circuits into Zilver.
+    Convenience function: parse a QASM string and compute the loss landscape.
     """
     from .qasm_bridge import circuit_from_qasm
     circuit = circuit_from_qasm(qasm_str)

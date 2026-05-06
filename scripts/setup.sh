@@ -54,7 +54,7 @@ HOOK_DIR="$REPO_ROOT/.git/hooks"
 cp -f "$REPO_ROOT/scripts/guard.py" "$HOOK_DIR/_guard.py"
 cat > "$HOOK_DIR/pre-commit" <<'HOOK'
 #!/bin/sh
-python "$(git rev-parse --show-toplevel)/.git/hooks/_guard.py"
+python3 "$(git rev-parse --show-toplevel)/.git/hooks/_guard.py"
 exit $?
 HOOK
 chmod +x "$HOOK_DIR/pre-commit"
