@@ -39,8 +39,7 @@ def circuit_from_qasm(qasm_str: str) -> Circuit:
     sequential index in the output parameter vector.
 
     Limitations: does not support custom gate definitions or classical control.
-    Intended for hardware-efficient / RealAmplitudes / QAOA circuits as
-    
+    Intended for hardware-efficient / RealAmplitudes / QAOA circuits.
     """
     lines = [line.strip() for line in qasm_str.splitlines()]
     lines = [line for line in lines if line and not line.startswith("//")]
