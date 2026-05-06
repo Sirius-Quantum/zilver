@@ -14,8 +14,6 @@ The network is a distributed fabric of Apple Silicon nodes. Operators contribute
 
 > **v0.3 is under active development.** APIs and wire formats may change between minor releases.
 
----
-
 ## Requirements
 
 - Apple Silicon Mac (M1 or later)
@@ -23,8 +21,6 @@ The network is a distributed fabric of Apple Silicon nodes. Operators contribute
 - Python 3.10+
 
 MLX does not run on Linux, Windows, or Intel Macs. This is a deliberate constraint — the architecture is built around Apple's unified memory model and Metal compute stack.
-
----
 
 ## Local simulation
 
@@ -61,8 +57,6 @@ Three simulation backends ship in the base package:
 | Statevector | `sv` | 30 |
 | Density matrix | `dm` | 15 |
 | Tensor network | `tn` | 50+ (circuit-dependent) |
-
----
 
 ## Network
 
@@ -106,13 +100,9 @@ print(result.expectation)
 print(result.verify(job))  # cryptographic result verification
 ```
 
----
-
 ## Feedback & contributions
 
 Open an issue on [GitHub](https://github.com/Sirius-Quantum/zilver/issues) or reach us at [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
-
----
 
 ## License
 
