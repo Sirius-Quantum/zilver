@@ -6,34 +6,86 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1--M4-black.svg)](https://www.apple.com/mac/)
 
-**Open quantum simulation network for Apple Silicon.**
+**Distributed quantum simulation network for Apple Silicon.**
 
-Zilver turns your Apple Silicon Mac into a quantum simulation node.
+Zilver is a quantum simulation framework built on [MLX](https://github.com/ml-explore/mlx), Apple's unified memory compute framework. It runs natively on Apple Silicon — M1 through M4 — using Metal for GPU dispatch and the Neural Engine where applicable. There is no cloud dependency, no virtualisation layer, and no emulation.
 
-Built on [MLX](https://github.com/ml-explore/mlx) — Apple's machine learning framework for macOS. Requires an Apple Silicon Mac (M1 or later) running macOS. MLX uses Apple's Metal GPU and unified memory architecture; it does not run on Linux, Windows, or Intel Macs.
+The network is a distributed fabric of Apple Silicon nodes. Operators contribute their hardware. Researchers submit circuits. The registry coordinates matching, job dispatch, and result verification without acting as a compute intermediary.
 
-Statevector, density matrix, and tensor network backends.
+> **v0.3 is under active development.** APIs and wire formats may change between minor releases.
 
 ---
 
-## Run a node
+## Requirements
 
-Got an Apple Silicon Mac? You can contribute compute to the network.
+- Apple Silicon Mac (M1 or later)
+- macOS 13 Ventura or later
+- Python 3.10+
+
+MLX does not run on Linux, Windows, or Intel Macs. This is a deliberate constraint — the architecture is built around Apple's unified memory model and Metal compute stack.
+
+---
+
+## Local simulation
+
+Install and run circuits immediately, no account or network required.
+
+```bash
+pip install zilver
+```
+
+```python
+from zilver.circuit import hardware_efficient
+from zilver.gradients import param_shift_gradient
+from zilver.landscape import LossLandscape
+import mlx.core as mx
+
+circuit = hardware_efficient(n_qubits=6, depth=3)
+
+# Loss landscape analysis
+result = LossLandscape(circuit, sweep_params=(0, 1), resolution=40).compute()
+print(f"Trainability score: {result.trainability_score():.3f}")
+print(f"Plateau coverage:   {result.plateau_coverage():.1%}")
+print(f"Wall time:          {result.wall_time_seconds:.3f}s")
+
+# Parameter-shift gradients, fully batched on Metal
+f = circuit.compile(observable="sum_z")
+params = mx.zeros([circuit.n_params])
+grads = param_shift_gradient(f, params)
+```
+
+Three simulation backends ship in the base package:
+
+| Backend | Flag | Max qubits (M1 Pro, 16 GB) |
+|---|---|---|
+| Statevector | `sv` | 30 |
+| Density matrix | `dm` | 15 |
+| Tensor network | `tn` | 50+ (circuit-dependent) |
+
+---
+
+## Network
+
+The Zilver network connects Apple Silicon nodes into a shared simulation fabric. Researchers submit jobs to the registry; the registry matches to a capable node; the node executes and returns a cryptographically signed result.
+
+### Join as a node operator
+
+Node registration is invite-only during the current phase. If you have Apple Silicon hardware and want to contribute compute, open an issue with your chip model and intended uptime.
+
+Once approved, you will receive a registry API key. Start your node:
 
 ```bash
 pip install "zilver[network]"
-zilver-node start --registry https://registry.siriusquantum.com
+zilver-node start \
+  --registry https://registry.siriusquantum.com \
+  --public-url https://your-public-url.example.com
 ```
 
-See [NODES.md](NODES.md) for full requirements and how to apply for operator approval.
+See [NODES.md](NODES.md) for setup requirements, public URL options, and identity management.
 
----
+### Submit jobs as a researcher
 
-## Submit jobs
-
-Researchers and AI labs can submit quantum simulation jobs to the network via API. No infrastructure required — bring your circuit, we handle the compute.
-
-To request API access, open an issue at [github.com/Sirius-Quantum/zilver](https://github.com/Sirius-Quantum/zilver) with your use case and institution. Once approved you will receive a client API key and the registry endpoint.
+API access is by invitation. To request access, open an issue describing your use case and institution. Once approved you will receive a client key.
 
 ```python
 from zilver.client import NetworkCoordinator
@@ -41,63 +93,29 @@ from zilver.node import SimJob
 
 coord = NetworkCoordinator(
     "https://registry.siriusquantum.com",
-    client_api_key="your-api-key",
+    client_api_key="your-key",
 )
 
 job = SimJob(
     circuit_ops=[{"type": "ry", "qubits": [0], "param_idx": 0}],
     n_qubits=4, n_params=1, params=[1.57], backend="sv",
 )
+
 result = coord.submit(job)
 print(result.expectation)
-print(result.verify(job))   # True
+print(result.verify(job))  # cryptographic result verification
 ```
 
 ---
 
-## Local simulation
+## Feedback & contributions
 
-Use Zilver as a standalone quantum simulator on any Apple Silicon Mac — no network or account required.
-
-```bash
-pip install zilver
-```
-
-MLX is installed automatically as a dependency. No separate download needed.
-
-```python
-from zilver.circuit import hardware_efficient
-from zilver.landscape import LossLandscape
-
-circuit = hardware_efficient(n_qubits=6, depth=3)
-result = LossLandscape(circuit, sweep_params=(0, 1), resolution=20).compute()
-
-print(f"Plateau coverage:   {result.plateau_coverage():.1%}")
-print(f"Trainability score: {result.trainability_score():.3f}")
-print(f"Wall time:          {result.wall_time_seconds:.3f}s")
-```
-
-Parameter-shift gradients, fully batched:
-
-```python
-from zilver.circuit import hardware_efficient
-from zilver.gradients import param_shift_gradient
-import mlx.core as mx
-
-circuit = hardware_efficient(n_qubits=4, depth=2)
-f = circuit.compile(observable="sum_z")
-params = mx.zeros([circuit.n_params])
-grads = param_shift_gradient(f, params)
-```
+Open an issue on [GitHub](https://github.com/Sirius-Quantum/zilver/issues) or reach us at [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
 
 ---
 
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE).
-
----
-
-## Manifesto
 
 [Read the Sirius Quantum Manifesto](MANIFESTO.md)
