@@ -8,6 +8,20 @@ Core simulation
 ``Circuit``, ``LossLandscape``, ``param_shift_gradient`` and the gate
 library are available without any optional dependencies.
 
+Statevector backends
+--------------------
+``Circuit.statevector(method=...)`` dispatches across:
+
+* ``method="metal"`` — custom Metal compute kernels fused via ``mx.compile``
+  (this is the headline single-statevector path on Apple Silicon).
+* ``method="accel"`` — multithreaded CPU path (numba + Accelerate). Requires
+  ``pip install zilver[accel]``. Supports complex64 and complex128.
+* ``method="mlx"`` — the original generic MLX path; still optimal for
+  ``vmap``-batched workloads (parameter sweeps, gradient batches, fidelity
+  kernels).
+* ``method="auto"`` (default) — picks the best backend for the circuit and
+  precision.
+
 Distributed network (requires ``pip install zilver[network]``)
 ---------------------------------------------------------------
 ``NodeClient``, ``RegistryClient``, and ``NetworkCoordinator`` are imported
@@ -42,6 +56,9 @@ __all__ = [
     "LossLandscape",
     "LandscapeResult",
     "gates",
+    # Statevector backends (optional, lazily imported)
+    "metal",
+    "accel",
     # Distributed network (optional)
     "NodeClient",
     "RegistryClient",
@@ -51,12 +68,20 @@ __all__ = [
 
 def __getattr__(name: str):
     """
-    Lazy import for network-layer symbols.
+    Lazy imports for optional / heavy-dep submodules.
 
-    Defers importing ``fastapi`` and ``httpx`` until the caller actually
-    references a network class, so that ``import zilver`` never fails on
-    machines where the ``[network]`` extras are not installed.
+    * ``metal``  — needs the MLX Metal backend (any Apple Silicon Mac).
+    * ``accel``  — needs ``numba`` (install via ``pip install zilver[accel]``).
+    * ``NodeClient`` / ``RegistryClient`` / ``NetworkCoordinator`` — need the
+      ``[network]`` extras (FastAPI, httpx, etc.).
+
+    Importing on attribute access keeps a plain ``import zilver`` cheap.
     """
+    import importlib
+    if name in {"metal", "accel"}:
+        mod = importlib.import_module(f".{name}", __name__)
+        globals()[name] = mod
+        return mod
     _network = {"NodeClient", "RegistryClient", "NetworkCoordinator"}
     if name in _network:
         from .client import NodeClient, RegistryClient, NetworkCoordinator  # noqa: F401

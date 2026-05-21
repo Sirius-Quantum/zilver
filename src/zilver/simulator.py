@@ -7,41 +7,73 @@ import numpy as np
 
 
 class StateVector:
-    """Wrapper around an MLX statevector array."""
+    """Wrapper around a quantum statevector.
 
-    def __init__(self, n_qubits: int, array: mx.array | None = None):
+    Internally stores either:
+      * an MLX array (default, complex64) — for the MLX / Metal GPU paths
+      * a NumPy array (complex64 or complex128) — for the accel CPU path,
+        especially when ``precision="double"`` (MLX has no complex128 type)
+    """
+
+    def __init__(self, n_qubits: int,
+                 array: "mx.array | np.ndarray | None" = None):
         self.n_qubits = n_qubits
-        if array is not None:
-            self._state = array.astype(mx.complex64)
-        else:
-            # |0...0> computational basis state
+        self._state_np: np.ndarray | None = None
+        self._state: mx.array | None = None
+        if array is None:
             state = np.zeros(2**n_qubits, dtype=np.complex64)
             state[0] = 1.0
             self._state = mx.array(state)
+            return
+        if isinstance(array, np.ndarray):
+            # Preserve complex128 if given; only downcast unrecognised dtypes
+            if array.dtype == np.complex128:
+                self._state_np = array
+            elif array.dtype == np.complex64:
+                self._state = mx.array(array)
+            else:
+                self._state = mx.array(array.astype(np.complex64))
+        else:
+            # mx.array — MLX only supports complex64 today
+            self._state = array.astype(mx.complex64)
 
     @property
     def array(self) -> mx.array:
-        return self._state
+        """Return the MLX-backed statevector. Materialises from NumPy if
+        needed (lossy: complex128 → complex64)."""
+        if self._state is not None:
+            return self._state
+        # Downcast from numpy complex128 to complex64 MLX
+        return mx.array(self._state_np.astype(np.complex64))
+
+    @property
+    def dtype(self) -> np.dtype:
+        """The complex dtype actually held — complex64 or complex128."""
+        if self._state_np is not None:
+            return self._state_np.dtype
+        return np.complex64
 
     @classmethod
     def zero_state(cls, n_qubits: int) -> "StateVector":
         return cls(n_qubits)
 
     @classmethod
-    def from_array(cls, arr: mx.array | np.ndarray, n_qubits: int) -> "StateVector":
-        if isinstance(arr, np.ndarray):
-            arr = mx.array(arr)
+    def from_array(cls, arr: "mx.array | np.ndarray", n_qubits: int) -> "StateVector":
         return cls(n_qubits, arr)
 
     def probabilities(self) -> mx.array:
-        return mx.abs(self._state) ** 2
+        return mx.abs(self.array) ** 2
 
     def numpy(self) -> np.ndarray:
+        """Return the statevector as a NumPy array. Preserves complex128
+        when the StateVector was constructed at double precision."""
+        if self._state_np is not None:
+            return self._state_np
         mx.eval(self._state)
         return np.array(self._state.tolist(), dtype=np.complex64)
 
     def __repr__(self) -> str:
-        return f"StateVector(n_qubits={self.n_qubits})"
+        return f"StateVector(n_qubits={self.n_qubits}, dtype={self.dtype})"
 
 
 def apply_gate(

@@ -319,8 +319,107 @@ class Circuit:
         """Number of gate operations in the circuit."""
         return len(self._ops)
 
-    def statevector(self, params: mx.array) -> StateVector:
-        """Execute and return the full statevector."""
+    def _pick_auto_method(self, precision: str) -> str:
+        """Choose a concrete statevector backend for ``method='auto'``.
+
+        Order of preference: ``metal`` (single precision, supported gates) →
+        ``accel`` (any precision, requires numba) → ``mlx`` (always available).
+        """
+        if precision == "single":
+            try:
+                from . import metal
+                if metal.supports(self):
+                    return "metal"
+            except Exception:
+                pass
+        try:
+            import numba  # noqa: F401
+            return "accel"
+        except ImportError:
+            return "mlx"
+
+    def statevector(self, params, method: str = "auto",
+                    precision: str = "single") -> StateVector:
+        """Execute the circuit and return the final statevector.
+
+        Parameters
+        ----------
+        params:
+            Parameter vector. ``mx.array`` for the MLX / Metal paths,
+            ``np.ndarray`` for the accel CPU path.
+        method:
+            Execution backend. One of:
+
+            * ``"auto"`` (default) — picks the fastest backend for this
+              hardware, circuit, and precision. On Apple Silicon with
+              ``precision="single"``: tries ``"metal"`` first (custom Metal
+              compute kernels via ``mx.compile``), falls back to ``"accel"``
+              for unsupported gate kinds. With ``precision="double"``: routes
+              directly to ``"accel"`` (Apple GPU's float64 support is
+              software-emulated and slow).
+            * ``"metal"`` — hand-written Metal compute kernels fused via
+              :func:`mx.compile`. This is Zilver's headline single-statevector
+              path. Beats Qiskit Aer 1.5–2× at n = 12–22 on M-series.
+              Single-precision (complex64) only.
+            * ``"accel"`` — multithreaded CPU path (numba + Accelerate).
+              Supports both complex64 and complex128. Required path for
+              ``precision="double"``.
+            * ``"mlx"`` — the legacy generic-MLX path (transpose+matmul per
+              gate). Kept for batched / ``vmap`` workloads.
+
+        precision:
+            ``"single"`` (default, complex64, ~10⁻⁷ numerical fidelity, fast)
+            or ``"double"`` (complex128, ~10⁻¹⁵ numerical fidelity, slower).
+            Use ``"double"`` when verifying QPU output, doing accumulated-phase
+            studies, or when paper-grade reproducibility matters.
+        """
+        if precision not in ("single", "double"):
+            raise ValueError(f"precision must be 'single' or 'double'; got {precision!r}")
+
+        if method == "auto":
+            method = self._pick_auto_method(precision)
+
+        if method == "metal":
+            if precision == "double":
+                raise NotImplementedError(
+                    "method='metal' does not support precision='double' "
+                    "(Apple GPU float64 is software-emulated). "
+                    "Use method='accel' or method='auto' for double precision."
+                )
+            try:
+                from . import metal
+            except ImportError as e:  # pragma: no cover
+                raise RuntimeError(
+                    "method='metal' requires MLX with Metal backend; "
+                    f"import failed: {e}"
+                ) from e
+            sv_np = metal.run_circuit(self, params, compile=True)
+            return StateVector.from_array(sv_np, self.n_qubits)
+
+        if method == "accel":
+            try:
+                from . import accel
+            except ImportError as e:
+                raise RuntimeError(
+                    "method='accel' requires the optional [accel] extra "
+                    "(`pip install zilver[accel]`); import failed: " + str(e)
+                ) from e
+            dtype = np.complex128 if precision == "double" else np.complex64
+            state_np = accel.run_circuit_auto(
+                self, np.asarray(params, dtype=np.float64), dtype=dtype,
+            )
+            return StateVector.from_array(state_np, self.n_qubits)
+
+        if method != "mlx":
+            raise ValueError(f"Unknown statevector method: {method!r}")
+
+        if precision == "double":
+            raise NotImplementedError(
+                "method='mlx' uses MLX which defaults to single precision. "
+                "Use method='accel' for double precision."
+            )
+        if not isinstance(params, mx.array):
+            params = mx.array(np.asarray(params, dtype=np.float32))
         state = self._run(params)
         mx.eval(state)
         return StateVector.from_array(state, self.n_qubits)
