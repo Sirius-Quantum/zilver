@@ -6,9 +6,9 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1--M4-black.svg)](https://www.apple.com/mac/)
 
-Zilver is a quantum circuit simulator built natively for Apple Silicon. It runs entirely on the Apple GPU through [MLX](https://github.com/ml-explore/mlx), with hand-written Metal compute kernels for the common gates and a multithreaded CPU path through Numba and Accelerate.
+Zilver is a quantum circuit simulator built natively for Apple Silicon. It runs entirely on the Apple GPU through [MLX](https://github.com/ml-explore/mlx), with hand-written Metal compute kernels for the universal gates.
 
-It is designed for QML researchers and engineers who want to develop, train, and benchmark variational quantum algorithms locally on their own Mac. No cloud dependency. No virtualisation. No Intel-Mac path.
+It is designed for QML researchers and engineers who want to develop, train, and benchmark variational quantum algorithms locally on their own Mac. No cloud dependency. No virtualisation. No platform cost.
 
 ## Install and run
 
@@ -100,9 +100,9 @@ Single statevector, hardware-efficient ansatz at depth 2, on Apple M1 Pro with 1
 
 Two-qubit process fidelity against the ideal unitary: CNOT and CZ are bit-exact on every backend. RZZ on the Metal path is within 3.4e-08 of ideal, the float32 floor. The Accel path with `precision="double"` reproduces ideal to numerical zero.
 
-## Optional: join the Zilver network
+## Join the Zilver network
 
-Everything above runs standalone on your Mac. If you want to contribute compute or run jobs across a distributed pool of Apple Silicon nodes, the Zilver network adds that as a separate, opt-in layer.
+Everything above runs standalone on your Mac/Mini. If you want to contribute compute or run jobs across a distributed pool of Apple Silicon nodes, the Zilver network adds that as a separate, opt-in layer.
 
 The network connects Apple Silicon nodes into a shared simulation fabric. Researchers submit jobs to the registry; the registry matches to a capable node; the node executes and returns a cryptographically signed result.
 
@@ -144,7 +144,7 @@ print(result.verify(job))
 
 ## Status
 
-v0.4 is under active development. Public APIs and wire formats may change between minor releases.
+Zilver is under active development. Public APIs and wire formats may change between minor releases.
 
 ## Feedback and contributions
 
