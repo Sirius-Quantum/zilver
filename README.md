@@ -6,105 +6,109 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1--M4-black.svg)](https://www.apple.com/mac/)
 
-**Distributed quantum simulation network for Apple Silicon.**
+Zilver is a quantum circuit simulator built natively for Apple Silicon. It runs entirely on the Apple GPU through [MLX](https://github.com/ml-explore/mlx), with hand-written Metal compute kernels for the common gates and a multithreaded CPU path through Numba and Accelerate.
 
-Zilver is a quantum simulation framework built on [MLX](https://github.com/ml-explore/mlx), Apple's unified memory compute framework. It runs natively on Apple Silicon — M1 through M4 — using Metal for GPU dispatch and the Neural Engine where applicable. There is no cloud dependency, no virtualisation layer, and no emulation.
+It is designed for QML researchers and engineers who want to develop, train, and benchmark variational quantum algorithms locally on their own Mac. No cloud dependency. No virtualisation. No Intel-Mac path.
 
-The network is a distributed fabric of Apple Silicon nodes. Operators contribute their hardware. Researchers submit circuits. The registry coordinates matching, job dispatch, and result verification without acting as a compute intermediary.
-
-> **v0.4 is under active development.** APIs and wire formats may change between minor releases.
-
-## Requirements
-
-- Apple Silicon Mac (M1 or later)
-- macOS 13 Ventura or later
-- Python 3.10+
-
-MLX does not run on Linux, Windows, or Intel Macs. This is a deliberate constraint — the architecture is built around Apple's unified memory model and Metal compute stack.
-
-## Local simulation
-
-Install and run circuits immediately, no account or network required.
+## Install and run
 
 ```bash
 pip install zilver
 ```
 
-```python
-from zilver.circuit import hardware_efficient
-from zilver.gradients import param_shift_gradient
-from zilver.landscape import LossLandscape
-import mlx.core as mx
-
-circuit = hardware_efficient(n_qubits=6, depth=3)
-
-# Loss landscape analysis
-result = LossLandscape(circuit, sweep_params=(0, 1), resolution=40).compute()
-print(f"Trainability score: {result.trainability_score():.3f}")
-print(f"Plateau coverage:   {result.plateau_coverage():.1%}")
-print(f"Wall time:          {result.wall_time_seconds:.3f}s")
-
-# Parameter-shift gradients, fully batched on Metal
-f = circuit.compile(observable="sum_z")
-params = mx.zeros([circuit.n_params])
-grads = param_shift_gradient(f, params)
-```
-
-Three simulation backends ship in the base package:
-
-| Backend | Flag | Max qubits (M1 Pro, 16 GB) |
-|---|---|---|
-| Statevector | `sv` | 30 |
-| Density matrix | `dm` | 15 |
-| Tensor network | `tn` | 50+ (circuit-dependent) |
-
-### Statevector dispatch methods
-
-`Circuit.statevector(params, method=..., precision=...)` selects how the statevector backend executes a circuit on Apple Silicon:
-
-| Method | Implementation | Best for |
-|---|---|---|
-| `"metal"` | Custom Metal compute kernels for RY/RZ/RX/H/X/CNOT/CZ/RZZ/U3, fused via `mx.compile` | Single statevector simulation (complex64) |
-| `"accel"` | Multithreaded CPU path (numba + Accelerate), strided + tape-lowered + k=2 fused kernels | Double-precision (`precision="double"`); CPU-only environments |
-| `"mlx"` | Generic MLX gate application (transpose + matmul per gate) | Batched / `vmap` workloads (parameter sweeps, gradient batches, fidelity kernels) |
-| `"auto"` | Picks `metal` for single-precision supported circuits, `accel` otherwise | Default |
-
-The `accel` path requires the optional extra: `pip install "zilver[accel]"`.
+Apple Silicon Mac, macOS 13 or later, Python 3.10 or later.
 
 ```python
 import numpy as np
 from zilver.circuit import hardware_efficient
 
-circuit = hardware_efficient(n_qubits=16, depth=2)
+circuit = hardware_efficient(n_qubits=10, depth=3)
 params  = np.random.default_rng(0).uniform(-np.pi, np.pi, circuit.n_params)
 
-sv = circuit.statevector(params, method="auto", precision="single")
-print(sv.dtype, sv.numpy().shape)
+sv = circuit.statevector(params)
+print(sv.numpy().shape, sv.dtype)
 ```
 
-### Single-statevector performance on Apple M1 Pro (16 GB)
+That is the entire setup. No accounts, no API keys, no registration.
 
-Hardware-efficient ansatz, depth 2. Lower is better.
+For the multithreaded CPU path and double-precision simulation, install the optional extra:
 
-| Qubits | zilver `metal` | qiskit-aer (statevector) | Speedup |
-|---|---|---|---|
-| 12 | 1.45 ms | 1.50 ms | 1.03× |
-| 16 | 1.76 ms | 4.84 ms | **2.76×** |
-| 20 | 19.93 ms | 40.84 ms | **2.05×** |
-| 22 | 70.31 ms | 148.44 ms | **2.11×** |
-| 24 | 334.63 ms | 588.61 ms | **1.76×** |
+```bash
+pip install "zilver[accel]"
+```
 
-2-qubit gate process fidelity vs ideal unitary: CNOT and CZ are bit-exact on all paths; RZZ on `metal` (complex64) is within 3.4 × 10⁻⁸ of ideal; `accel` with `precision="double"` matches to numerical zero.
+## What you can build
 
-## Network
+Zilver ships the primitives QML practitioners use daily.
 
-The Zilver network connects Apple Silicon nodes into a shared simulation fabric. Researchers submit jobs to the registry; the registry matches to a capable node; the node executes and returns a cryptographically signed result.
+**Variational algorithms.** Parameter-shift gradients, batched over a parameter vector or a parameter grid, fused into a single MLX dispatch.
+
+```python
+import mlx.core as mx
+from zilver.gradients import param_shift_gradient, param_shift_gradient_batched
+
+f = circuit.compile(observable="sum_z")
+g = param_shift_gradient(f, mx.array(params.astype(np.float32)))
+```
+
+**Quantum kernel methods.** A fidelity kernel `|<psi_i|psi_j>|^2` for an N-sample batch is one call, computed on-device.
+
+```python
+K = circuit.fidelity_kernel(batch_params)  # (N, N) numpy float32
+```
+
+**Loss-landscape and barren-plateau analysis.** A 2D parameter sweep at fixed depth is one vmap dispatch.
+
+```python
+from zilver.landscape import LossLandscape
+
+land = LossLandscape(circuit, sweep_params=(0, 1), resolution=32).compute()
+print(land.trainability_score(), land.plateau_coverage())
+```
+
+## Statevector backends
+
+`Circuit.statevector(params, method=..., precision=...)` selects how the circuit executes.
+
+`method="metal"` runs hand-written Metal compute kernels for RY, RZ, RX, H, X, CNOT, CZ, RZZ, and U3, fused into a single graph by `mx.compile`. Single precision (complex64). The default for single-statevector evaluation.
+
+`method="accel"` runs a multithreaded CPU path on Numba and Accelerate. It auto-routes between strided NumPy (small circuits), tape-lowered JIT dispatch, and k=2 fused blocks based on qubit count. Supports complex64 and complex128. Requires the `accel` extra.
+
+`method="mlx"` is the generic MLX path. Use it for batched workloads such as parameter sweeps, gradient batches, and fidelity kernels where `mx.vmap` over the parameter axis is the dominant compute pattern.
+
+`method="auto"` (the default) picks `metal` when the circuit uses only supported gate kinds and `precision="single"`, otherwise `accel`.
+
+The wider simulation surface (density-matrix and tensor-network backends) is selected at job-submission time via the `backend` flag.
+
+| Backend | Flag | Approximate ceiling on a 16 GB M-series |
+|---------|------|----------------------------------------|
+| Statevector | sv | 30 qubits |
+| Density matrix | dm | 15 qubits |
+| Tensor network | tn | 50+ qubits, circuit-dependent |
+
+## Performance
+
+Single statevector, hardware-efficient ansatz at depth 2, on Apple M1 Pro with 16 GB unified memory. Wall time in milliseconds, minimum of four trials; lower is better.
+
+| Qubits | Zilver (Metal) | Qiskit Aer |
+|-------:|---------------:|-----------:|
+|     12 |           1.45 |       1.50 |
+|     16 |           1.76 |       4.84 |
+|     20 |          19.93 |      40.84 |
+|     22 |          70.31 |     148.44 |
+|     24 |         334.63 |     588.61 |
+
+Two-qubit process fidelity against the ideal unitary: CNOT and CZ are bit-exact on every backend. RZZ on the Metal path is within 3.4e-08 of ideal, the float32 floor. The Accel path with `precision="double"` reproduces ideal to numerical zero.
+
+## Optional: join the Zilver network
+
+Everything above runs standalone on your Mac. If you want to contribute compute or run jobs across a distributed pool of Apple Silicon nodes, the Zilver network adds that as a separate, opt-in layer.
+
+The network connects Apple Silicon nodes into a shared simulation fabric. Researchers submit jobs to the registry; the registry matches to a capable node; the node executes and returns a cryptographically signed result.
 
 ### Join as a node operator
 
-Node registration is invite-only during the current phase. If you have Apple Silicon hardware and want to contribute compute, open an issue with your chip model and intended uptime.
-
-Once approved, you will receive a registry API key. Start your node:
+Node registration is invite-only during the current phase. Open an issue with your chip model and intended uptime; on approval you will receive a registry API key.
 
 ```bash
 pip install "zilver[network]"
@@ -117,7 +121,7 @@ See [NODES.md](NODES.md) for setup requirements, public URL options, and identit
 
 ### Submit jobs as a researcher
 
-API access is by invitation. To request access, open an issue describing your use case and institution. Once approved you will receive a client key.
+Client API access is also by invitation. Open an issue describing your use case and institution; on approval you will receive a client key.
 
 ```python
 from zilver.client import NetworkCoordinator
@@ -135,12 +139,16 @@ job = SimJob(
 
 result = coord.submit(job)
 print(result.expectation)
-print(result.verify(job))  # cryptographic result verification
+print(result.verify(job))
 ```
 
-## Feedback & contributions
+## Status
 
-Open an issue on [GitHub](https://github.com/Sirius-Quantum/zilver/issues) or reach us at [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
+v0.4 is under active development. Public APIs and wire formats may change between minor releases.
+
+## Feedback and contributions
+
+Open an issue on [GitHub](https://github.com/Sirius-Quantum/zilver/issues) or write to [info@siriusquantum.com](mailto:info@siriusquantum.com).
 
 ## License
 
