@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zilver"
-version = "0.3.2"
+version = "0.4.0"
 description = "Open quantum simulation network for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +35,7 @@ Manifesto = "https://github.com/sirius-quantum/zilver/blob/main/MANIFESTO.md"
 [project.optional-dependencies]
 dev     = ["pytest>=7.4", "pytest-benchmark>=4.0"]
 qiskit  = ["qiskit-aer>=0.12", "qiskit>=0.45"]
+accel   = ["numba>=0.59"]
 network = ["fastapi>=0.135.2", "starlette>=0.49.1", "uvicorn[standard]>=0.27", "httpx>=0.27", "slowapi>=0.1.9", "cryptography>=42.0", "rich>=13.0", "pyobjc-framework-Security>=10.0; sys_platform == 'darwin'"]
 
 [project.scripts]

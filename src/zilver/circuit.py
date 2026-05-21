@@ -358,9 +358,8 @@ class Circuit:
               directly to ``"accel"`` (Apple GPU's float64 support is
               software-emulated and slow).
             * ``"metal"`` — hand-written Metal compute kernels fused via
-              :func:`mx.compile`. This is Zilver's headline single-statevector
-              path. Beats Qiskit Aer 1.5–2× at n = 12–22 on M-series.
-              Single-precision (complex64) only.
+              :func:`mx.compile`. Best for single-statevector evaluation on
+              Apple Silicon. Single precision (complex64) only.
             * ``"accel"`` — multithreaded CPU path (numba + Accelerate).
               Supports both complex64 and complex128. Required path for
               ``precision="double"``.

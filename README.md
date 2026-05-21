@@ -12,7 +12,7 @@ Zilver is a quantum simulation framework built on [MLX](https://github.com/ml-ex
 
 The network is a distributed fabric of Apple Silicon nodes. Operators contribute their hardware. Researchers submit circuits. The registry coordinates matching, job dispatch, and result verification without acting as a compute intermediary.
 
-> **v0.3 is under active development.** APIs and wire formats may change between minor releases.
+> **v0.4 is under active development.** APIs and wire formats may change between minor releases.
 
 ## Requirements
 
@@ -57,6 +57,44 @@ Three simulation backends ship in the base package:
 | Statevector | `sv` | 30 |
 | Density matrix | `dm` | 15 |
 | Tensor network | `tn` | 50+ (circuit-dependent) |
+
+### Statevector dispatch methods
+
+`Circuit.statevector(params, method=..., precision=...)` selects how the statevector backend executes a circuit on Apple Silicon:
+
+| Method | Implementation | Best for |
+|---|---|---|
+| `"metal"` | Custom Metal compute kernels for RY/RZ/RX/H/X/CNOT/CZ/RZZ/U3, fused via `mx.compile` | Single statevector simulation (complex64) |
+| `"accel"` | Multithreaded CPU path (numba + Accelerate), strided + tape-lowered + k=2 fused kernels | Double-precision (`precision="double"`); CPU-only environments |
+| `"mlx"` | Generic MLX gate application (transpose + matmul per gate) | Batched / `vmap` workloads (parameter sweeps, gradient batches, fidelity kernels) |
+| `"auto"` | Picks `metal` for single-precision supported circuits, `accel` otherwise | Default |
+
+The `accel` path requires the optional extra: `pip install "zilver[accel]"`.
+
+```python
+import numpy as np
+from zilver.circuit import hardware_efficient
+
+circuit = hardware_efficient(n_qubits=16, depth=2)
+params  = np.random.default_rng(0).uniform(-np.pi, np.pi, circuit.n_params)
+
+sv = circuit.statevector(params, method="auto", precision="single")
+print(sv.dtype, sv.numpy().shape)
+```
+
+### Single-statevector performance on Apple M1 Pro (16 GB)
+
+Hardware-efficient ansatz, depth 2. Lower is better.
+
+| Qubits | zilver `metal` | qiskit-aer (statevector) | Speedup |
+|---|---|---|---|
+| 12 | 1.45 ms | 1.50 ms | 1.03× |
+| 16 | 1.76 ms | 4.84 ms | **2.76×** |
+| 20 | 19.93 ms | 40.84 ms | **2.05×** |
+| 22 | 70.31 ms | 148.44 ms | **2.11×** |
+| 24 | 334.63 ms | 588.61 ms | **1.76×** |
+
+2-qubit gate process fidelity vs ideal unitary: CNOT and CZ are bit-exact on all paths; RZZ on `metal` (complex64) is within 3.4 × 10⁻⁸ of ideal; `accel` `precision="double"` and Aer match to numerical zero. Run `benchmarks/bench_2q_fidelity.py` and `benchmarks/bench_apple_silicon_ceiling.py` to reproduce.
 
 ## Network
 
