@@ -1,6 +1,6 @@
 # Zilver
 
-[![PyPI version](https://img.shields.io/pypi/v/zilver.svg)](https://pypi.org/project/zilver/)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://pypi.org/project/zilver/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![MLX](https://img.shields.io/badge/MLX-0.18%2B-orange.svg)](https://github.com/ml-explore/mlx)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
