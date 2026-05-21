@@ -56,13 +56,26 @@ def param_shift_gradient_batched(
     Returns:
         (B, P) gradient matrix.
 
-    Useful for computing gradients at every point of a 20x20 landscape grid
-    simultaneously. Total circuit evaluations: 2 * B * P, all dispatched
-    as one Metal kernel via nested vmap.
+    Useful for computing gradients at every point of a landscape grid or for
+    sampling gradient variance (barren-plateau analysis). Total circuit
+    evaluations: ``2 * B * P``, all dispatched as a single flat vmap — no
+    nested vmap (which previously broke because the inner ``mx.eval`` is
+    illegal inside an outer trace).
     """
-    def grad_fn(p: mx.array) -> mx.array:
-        return param_shift_gradient(f, p, shift)
-    grads = mx.vmap(grad_fn)(params_batch)
+    B = params_batch.shape[0]
+    P = params_batch.shape[1]
+    eye = mx.eye(P, dtype=mx.float32)
+
+    # For each (b, k): produce params_batch[b] ± shift * e_k.
+    # Shape: (B, P, P) where the middle dim is the param-index being shifted.
+    plus  = mx.expand_dims(params_batch, 1) + shift * eye   # (B, P, P)
+    minus = mx.expand_dims(params_batch, 1) - shift * eye   # (B, P, P)
+    # Concat along the 2P axis: first P are +shift, next P are -shift.
+    shifted = mx.concatenate([plus, minus], axis=1)         # (B, 2P, P)
+    # Flatten to (B*2P, P), single vmap of f, reshape back to (B, 2P).
+    flat = shifted.reshape(B * 2 * P, P)
+    vals = mx.vmap(f)(flat).reshape(B, 2 * P)
+    grads = 0.5 * (vals[:, :P] - vals[:, P:])               # (B, P)
     mx.eval(grads)
     return grads
 
