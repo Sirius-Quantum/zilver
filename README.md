@@ -94,7 +94,7 @@ Hardware-efficient ansatz, depth 2. Lower is better.
 | 22 | 70.31 ms | 148.44 ms | **2.11×** |
 | 24 | 334.63 ms | 588.61 ms | **1.76×** |
 
-2-qubit gate process fidelity vs ideal unitary: CNOT and CZ are bit-exact on all paths; RZZ on `metal` (complex64) is within 3.4 × 10⁻⁸ of ideal; `accel` `precision="double"` and Aer match to numerical zero. Run `benchmarks/bench_2q_fidelity.py` and `benchmarks/bench_apple_silicon_ceiling.py` to reproduce.
+2-qubit gate process fidelity vs ideal unitary: CNOT and CZ are bit-exact on all paths; RZZ on `metal` (complex64) is within 3.4 × 10⁻⁸ of ideal; `accel` with `precision="double"` matches to numerical zero.
 
 ## Network
 
