@@ -33,6 +33,15 @@ try:
     from .simulator import StateVector, apply_gate, expectation_z, expectation_pauli_sum
     from .gradients import param_shift_gradient, param_shift_gradient_batched
     from .landscape import LossLandscape, LandscapeResult
+    from .density_matrix import (
+        NoisyCircuit,
+        NoiseModel,
+        depolarizing_kraus,
+        amplitude_damping_kraus,
+        phase_damping_kraus,
+        bit_flip_kraus,
+        phase_flip_kraus,
+    )
     from . import gates
 except ImportError:
     # MLX not available (e.g., registry running on Linux x86).
@@ -41,6 +50,9 @@ except ImportError:
     expectation_z = expectation_pauli_sum = None                # type: ignore[assignment]
     param_shift_gradient = param_shift_gradient_batched = None  # type: ignore[assignment]
     LossLandscape = LandscapeResult = gates = None              # type: ignore[assignment,misc]
+    NoisyCircuit = NoiseModel = None                            # type: ignore[assignment]
+    depolarizing_kraus = amplitude_damping_kraus = None         # type: ignore[assignment]
+    phase_damping_kraus = bit_flip_kraus = phase_flip_kraus = None  # type: ignore[assignment]
 
 __version__ = "0.4.0"
 __all__ = [
@@ -56,6 +68,14 @@ __all__ = [
     "LossLandscape",
     "LandscapeResult",
     "gates",
+    # Noisy simulation (density matrix)
+    "NoisyCircuit",
+    "NoiseModel",
+    "depolarizing_kraus",
+    "amplitude_damping_kraus",
+    "phase_damping_kraus",
+    "bit_flip_kraus",
+    "phase_flip_kraus",
     # Statevector backends (optional, lazily imported)
     "metal",
     "accel",

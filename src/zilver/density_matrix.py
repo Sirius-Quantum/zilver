@@ -153,6 +153,89 @@ def phase_flip_kraus(p: float) -> list[mx.array]:
 
 
 # ---------------------------------------------------------------------------
+# NoiseModel — declarative noise profile applied automatically after gates
+# ---------------------------------------------------------------------------
+
+@dataclass
+class NoiseModel:
+    """
+    A declarative noise profile applied automatically after every gate.
+
+    Channels are selected by gate arity: ``one_qubit`` channels run after each
+    single-qubit gate, ``two_qubit`` channels after each multi-qubit gate. In
+    both cases the channels are applied to *every* qubit the gate touches.
+
+    Each entry is a zero-arg callable returning a list of Kraus operators (the
+    same shape returned by ``depolarizing_kraus`` and friends), so a model can
+    stack several channels per gate.
+
+    Build one directly::
+
+        NoiseModel(one_qubit=[lambda: depolarizing_kraus(0.001)],
+                   two_qubit=[lambda: depolarizing_kraus(0.01)])
+
+    or via the factory methods :meth:`depolarizing` / :meth:`thermal_relaxation`.
+    """
+
+    one_qubit: list[Callable[[], list[mx.array]]] = field(default_factory=list)
+    two_qubit: list[Callable[[], list[mx.array]]] = field(default_factory=list)
+
+    def apply(self, rho: mx.array, qubits: Sequence[int], n: int) -> mx.array:
+        """Apply the relevant channels to each qubit touched by a gate."""
+        channels = self.one_qubit if len(qubits) == 1 else self.two_qubit
+        for q in qubits:
+            for kraus_fn in channels:
+                rho = apply_kraus_channel(rho, kraus_fn(), [q], n)
+        return rho
+
+    @classmethod
+    def depolarizing(cls, p1: float, p2: float | None = None) -> "NoiseModel":
+        """
+        Depolarizing noise: probability ``p1`` after single-qubit gates and
+        ``p2`` after two-qubit gates (per touched qubit). ``p2`` defaults to
+        ``p1``. Two-qubit gate error is typically ~10x the single-qubit rate.
+        """
+        p2 = p1 if p2 is None else p2
+        return cls(
+            one_qubit=[lambda: depolarizing_kraus(p1)],
+            two_qubit=[lambda: depolarizing_kraus(p2)],
+        )
+
+    @classmethod
+    def thermal_relaxation(
+        cls,
+        t1: float,
+        t2: float,
+        gate_time_1q: float,
+        gate_time_2q: float | None = None,
+    ) -> "NoiseModel":
+        """
+        Thermal relaxation from device coherence times.
+
+        Combines amplitude damping (T1 energy decay) with phase damping (pure
+        dephasing) so the total off-diagonal decay matches ``exp(-t/T2)``.
+        Times share a unit (e.g. ns); ``gate_time_2q`` defaults to ``gate_time_1q``.
+
+        Requires ``T2 <= 2*T1`` (physical bound for the dephasing split).
+        """
+        if t2 > 2 * t1:
+            raise ValueError(f"thermal_relaxation requires T2 <= 2*T1 (got T2={t2}, T1={t1})")
+        gate_time_2q = gate_time_1q if gate_time_2q is None else gate_time_2q
+
+        def _channels(t_gate: float) -> list[Callable[[], list[mx.array]]]:
+            gamma_amp = 1.0 - np.exp(-t_gate / t1)
+            # Pure-dephasing factor: total off-diag decay exp(-t/T2) divided by
+            # the amplitude-damping contribution sqrt(1 - gamma_amp) = exp(-t/2T1).
+            gamma_phase = 1.0 - np.exp(-2.0 * t_gate * (1.0 / t2 - 1.0 / (2.0 * t1)))
+            return [
+                lambda: amplitude_damping_kraus(gamma_amp),
+                lambda: phase_damping_kraus(gamma_phase),
+            ]
+
+        return cls(one_qubit=_channels(gate_time_1q), two_qubit=_channels(gate_time_2q))
+
+
+# ---------------------------------------------------------------------------
 # Expectation values on density matrix
 # ---------------------------------------------------------------------------
 
@@ -311,9 +394,12 @@ class NoisyCircuit:
 
     # --- Execution -----------------------------------------------------------
 
-    def run(self, params: mx.array) -> mx.array:
+    def run(self, params: mx.array, noise_model: "NoiseModel | None" = None) -> mx.array:
         """
         Execute circuit, return final density matrix.
+
+        If ``noise_model`` is given, its channels are applied automatically
+        after each gate (in addition to any explicit ``.noise()`` ops).
 
         Returns (2^n, 2^n) complex64 density matrix.
         """
@@ -332,16 +418,21 @@ class NoisyCircuit:
                 else:
                     gate = op.gate_fn()
                 rho = apply_gate_dm(rho, gate, op.qubits, self.n_qubits)
+                if noise_model is not None:
+                    rho = noise_model.apply(rho, op.qubits, self.n_qubits)
 
         return rho
 
     def compile(
         self,
         observable: str = "sum_z",
-        noise_model: dict | None = None,
+        noise_model: "NoiseModel | None" = None,
     ) -> Callable[[mx.array], mx.array]:
         """
         Return a function: params -> scalar expectation value.
+
+        If ``noise_model`` is given, its channels are applied after every gate
+        (see :class:`NoiseModel`), on top of any explicit ``.noise()`` ops.
 
         Unlike the statevector Circuit.compile(), this is NOT vmappable
         for large n (density matrix is 4^n — only one fits in memory at n=16).
@@ -350,7 +441,7 @@ class NoisyCircuit:
         n = self.n_qubits
 
         def eval_fn(params: mx.array) -> mx.array:
-            rho = self.run(params)
+            rho = self.run(params, noise_model=noise_model)
             if observable == "sum_z":
                 return expectation_sum_z_dm(rho, n)
             elif observable == "z0":
