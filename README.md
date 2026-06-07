@@ -18,6 +18,8 @@ pip install zilver
 
 Apple Silicon Mac, macOS 13 or later, Python 3.10 or later.
 
+New to Zilver? The [Quickstart](QUICKSTART.md) goes from install to a trained circuit in a few minutes.
+
 ```python
 import numpy as np
 from zilver.circuit import hardware_efficient
