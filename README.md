@@ -1,6 +1,6 @@
 # Zilver
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://pypi.org/project/zilver/)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://pypi.org/project/zilver/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![MLX](https://img.shields.io/badge/MLX-0.18%2B-orange.svg)](https://github.com/ml-explore/mlx)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
@@ -64,6 +64,22 @@ from zilver.landscape import LossLandscape
 
 land = LossLandscape(circuit, sweep_params=(0, 1), resolution=32).compute()
 print(land.trainability_score(), land.plateau_coverage())
+```
+
+**Noisy simulation.** `NoisyCircuit` runs on the density-matrix backend, and a `NoiseModel` applies Kraus channels automatically after every gate — depolarizing, or thermal relaxation built straight from device `T1`/`T2` and gate times.
+
+```python
+import mlx.core as mx
+from zilver import NoisyCircuit, NoiseModel
+
+nc = NoisyCircuit(4)
+nc.h(0); nc.cnot(0, 1); nc.ry(1, param_idx=0)
+
+# coherence times and gate durations share a unit (e.g. ns)
+noise = NoiseModel.thermal_relaxation(t1=250_000, t2=170_000,
+                                      gate_time_1q=32, gate_time_2q=70)
+f = nc.compile(observable="sum_z", noise_model=noise)
+exp = f(mx.array([0.7]))
 ```
 
 ## Statevector backends
