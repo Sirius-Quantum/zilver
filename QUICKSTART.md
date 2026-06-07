@@ -120,7 +120,8 @@ noise = NoiseModel.depolarizing(p1=0.01, p2=0.02)
 rho = nc.run(mx.array([]), noise_model=noise)   # (8, 8) density matrix
 ```
 
-See `examples/noisy_simulation.py` for thermal relaxation and a noise sweep.
+See `examples/noisy_simulation.py` for thermal relaxation and a noise sweep, and
+`examples/noisy_vqe.py` for a VQE run comparing ideal vs noisy ground-state energy.
 
 ## Where to next
 
