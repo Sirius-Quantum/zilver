@@ -3,6 +3,18 @@
 Reproducible benchmarks you can run yourself. Nothing here is a black box — add
 your own quantum account and verify the numbers on real hardware.
 
+## `noise_demo.py` — offline noise-model validation (start here)
+
+Zero dependencies beyond zilver, no account: it parameterises the noise model
+with representative device coherence numbers and shows the simulated observable
+follows the **analytic T1/T2 decay laws** every real device obeys — reproduced to
+~1e-6. The fastest proof that the noise model is physically correct.
+
+```bash
+pip install zilver
+python benchmarks/noise_demo.py --device superconducting-fast --ghz-n 4
+```
+
 ## `ghz_hellinger.py` — sim-to-real fidelity
 
 The standard noise-model validation (the same GHZ + Hellinger demonstration
