@@ -54,7 +54,7 @@ except ImportError:
     depolarizing_kraus = amplitude_damping_kraus = None         # type: ignore[assignment]
     phase_damping_kraus = bit_flip_kraus = phase_flip_kraus = None  # type: ignore[assignment]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
     # Core simulation
     "Circuit",
