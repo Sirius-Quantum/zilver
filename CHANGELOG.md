@@ -17,6 +17,20 @@ All notable changes to Zilver are documented here. This project adheres to
   `phase_flip_kraus`.
 - `NoisyCircuit.run()` and `.compile()` accept a `noise_model` argument.
 
+### Validated against real hardware
+- **Sim-to-real benchmark** (`benchmarks/ghz_hellinger.py`): GHZ + Hellinger-distance
+  validation of the noise model against real IBM and IQM hardware, with the noise
+  model built from each device's live calibration. Reproducible with your own
+  account; published reference runs in `benchmarks/results/`.
+- **`benchmarks/noise_demo.py`**: offline check that the noise model reproduces the
+  analytic T1/T2 decay laws to ~1e-6 — no account needed.
+
+### Docs & examples
+- **[Quickstart](QUICKSTART.md)** — a local getting-started guide: install → first
+  circuit → training → quantum kernels → noisy simulation.
+- **`examples/noisy_simulation.py`** — noise channels and a depolarizing sweep.
+- **`examples/noisy_vqe.py`** — VQE ground-state energy, ideal vs noisy.
+
 ## [0.4.0]
 
 - Statevector backends (`metal`, `accel`, `mlx`), parameter-shift gradients,
