@@ -797,19 +797,41 @@ def run_circuit_tape(circuit, params: np.ndarray, tape: dict | None = None) -> n
 # ----------------------------------------------------------------------------
 
 def _apply_1q_numpy_strided(state: np.ndarray, M: np.ndarray, q: int, n: int) -> np.ndarray:
-    """Out-of-place 1q gate via pure NumPy reshape + vectorised arithmetic.
+    """In-place 1q gate via NumPy reshape + vectorised arithmetic.
 
-    Returns a fresh statevector. Out-of-place avoids the redundant copy that
-    in-place would need (since we'd otherwise read v[:, 0, :] *after* writing
-    it). For n ≤ ~14, NumPy on Accelerate beats threaded JIT.
+    MEMORY, WHICH IS THE POINT AT LARGE n. The obvious form allocates a whole
+    new statevector per gate (``out = np.empty_like(v)``) and one temporary per
+    product, so a circuit of ~3n gates churns several multiples of the state.
+    Measured on a 30-qubit run: 56 GB peak for an 8.6 GB state, and the process
+    was OOM-killed at 31 qubits on a 60 GB box -- by allocation overhead, not by
+    the state itself.
+
+    A 1q gate is block-diagonal in the (left, 2, stride) view: the halves mix
+    only with each other. Two HALF-sized scratch buffers therefore suffice, so
+    the peak is one extra state instead of several, and it is reused across the
+    two output rows. The order matters -- ``b`` is updated only after both rows
+    have read the original ``b``, and ``a`` only after ``tmp2`` has read the
+    original ``a``.
     """
     stride = 1 << (n - 1 - q)
     left   = 1 << q
     v = state.reshape(left, 2, stride)
-    out = np.empty_like(v)
-    out[:, 0, :] = M[0, 0] * v[:, 0, :] + M[0, 1] * v[:, 1, :]
-    out[:, 1, :] = M[1, 0] * v[:, 0, :] + M[1, 1] * v[:, 1, :]
-    return out.reshape(-1)
+    a = v[:, 0, :]
+    b = v[:, 1, :]
+
+    tmp  = np.empty_like(a)                 # holds the new upper half
+    tmp2 = np.empty_like(a)                 # scratch, reused
+
+    np.multiply(a, M[0, 0], out=tmp)        # tmp  = M00 a
+    np.multiply(b, M[0, 1], out=tmp2)       # tmp2 = M01 b
+    tmp += tmp2                             # tmp  = M00 a + M01 b
+
+    np.multiply(a, M[1, 0], out=tmp2)       # tmp2 = M10 a   (a still original)
+    b *= M[1, 1]                            # b    = M11 b   (b already consumed)
+    b += tmp2                               # b    = M10 a + M11 b
+    a[:] = tmp                              # a    = M00 a + M01 b
+
+    return state
 
 
 def _apply_2q_numpy_strided(state: np.ndarray, M: np.ndarray, qa: int, qb: int, n: int) -> np.ndarray:
