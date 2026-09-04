@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Can this machine be a Zilver node? Run from a zilver checkout:
 #
-#     bash scripts/x86-node-check.sh
+#     bash scripts/x86-node-check.sh          # ladder to 30 qubits
+#     MAX_Q=20 bash scripts/x86-node-check.sh # stop lower on a small box
 #
 # Four questions, in order, each gating the next:
 #   1. does zilver install without MLX?
@@ -40,17 +41,64 @@ for m in ("circuit","gates","simulator","tensor_network","node",
 print(f"  all modules import.  HAS_MLX={HAS_MLX}")
 PY
 
-echo; echo "=== 3. test suite ==="
-pip install -q pytest
-python3 -m pytest tests -q --no-header --tb=line 2>&1 | tail -3
+echo; echo "=== 3. correctness ==="
+# tests/ is gitignored, so a clone has no suite to run. These checks are
+# self-contained and are the ones that would actually catch a wrong array
+# backend: exact states with known amplitudes, and norm preservation.
+python3 - <<'PY'
+import numpy as np, sys
+from zilver.circuit import Circuit
+fails = []
+
+def amps(c, p=()):
+    return np.asarray(c.statevector(list(p)).numpy()).ravel()
+
+# Bell: (|00> + |11>)/sqrt(2)
+c = Circuit(2); c.h(0); c.cnot(0, 1)
+v = amps(c); want = np.array([1, 0, 0, 1]) / np.sqrt(2)
+if not np.allclose(np.abs(v), np.abs(want), atol=1e-5): fails.append(f"Bell {v}")
+print(f"  Bell        {np.round(v.real, 4)}   expect [0.7071 0 0 0.7071]")
+
+# GHZ(n): only |0...0> and |1...1> populated
+for n in (3, 5, 8):
+    g = Circuit(n); g.h(0)
+    for q in range(n - 1): g.cnot(q, q + 1)
+    v = amps(g); nz = np.nonzero(np.abs(v) > 1e-4)[0]
+    ok = nz.tolist() == [0, 2**n - 1] and np.allclose(np.abs(v[nz]), 1/np.sqrt(2), atol=1e-5)
+    if not ok: fails.append(f"GHZ({n}) nonzero at {nz.tolist()}")
+    print(f"  GHZ({n})      nonzero {nz.tolist()}   expect [0, {2**n - 1}]")
+
+# unitarity: a random parameterised circuit must preserve the norm
+rng = np.random.default_rng(20260904)
+for n in (4, 7, 10):
+    c = Circuit(n); pi = 0
+    for _ in range(5 * n):
+        k = int(rng.integers(0, 6)); q = int(rng.integers(0, n))
+        q2 = int(rng.integers(0, n))
+        while q2 == q: q2 = int(rng.integers(0, n))
+        if   k == 0: c.h(q)
+        elif k == 1: c.x(q)
+        elif k == 2: c.ry(q, pi); pi += 1
+        elif k == 3: c.rz(q, pi); pi += 1
+        elif k == 4: c.cnot(q, q2)
+        else:        c.cz(q, q2)
+    p = rng.uniform(0, 2*np.pi, size=max(pi, 1)).astype(np.float32)
+    nrm = float(np.linalg.norm(amps(c, p)))
+    if abs(nrm - 1.0) > 1e-4: fails.append(f"norm({n}q) = {nrm}")
+    print(f"  random {n:2d}q   norm {nrm:.7f}   expect 1.0000000")
+
+print("\n  FAILED: " + "; ".join(fails) if fails else "\n  all correctness checks passed")
+sys.exit(1 if fails else 0)
+PY
 
 echo; echo "=== 4. qubit ceiling and throughput ==="
 python3 - <<'PY'
-import json, time, numpy as np, os
+import json, time, os, numpy as np
 from zilver.circuit import Circuit
 from zilver._array import HAS_MLX
 rows=[]
-for n in range(4, 31):
+MAXQ = int(os.environ.get("MAX_Q", "30"))
+for n in range(4, MAXQ + 1):
     gb = (2**n) * 8 / 1e9                      # interleaved float32 == complex64
     if gb > 40: rows.append({"n":n,"skipped":True,"state_gb":round(gb,2)}); break
     c=Circuit(n); pi=0
