@@ -835,31 +835,62 @@ def _apply_1q_numpy_strided(state: np.ndarray, M: np.ndarray, q: int, n: int) ->
 
 
 def _apply_2q_numpy_strided(state: np.ndarray, M: np.ndarray, qa: int, qb: int, n: int) -> np.ndarray:
-    """Out-of-place 2q gate via NumPy gather/multiply/scatter."""
+    """In-place 2q gate via reshape views. No index arrays.
+
+    THE MEMORY THIS REPLACES. The gather/scatter form built four int64 index
+    arrays of 2^(n-2) entries -- together exactly the size of the statevector --
+    then four gathered blocks (another whole state), then ``state.copy()``, then
+    a temporary per product. About 4x the state per two-qubit gate, which is
+    what OOM-killed a 31-qubit circuit on a 60 GB box.
+
+    None of it is needed. The two qubits sit at fixed bit positions, so
+    reshaping the flat state to ``(A, 2, B, 2, C)`` puts them on axes 1 and 3,
+    where C spans the bits below the lower qubit, B the bits between them, and
+    A the bits above the higher one. Each of the four amplitude blocks is then
+    a basic slice -- a VIEW, costing nothing -- and the gate is a 4x4 mix of
+    those views.
+
+    Three quarter-sized accumulators plus one product scratch is enough: rows 0
+    to 2 are accumulated out of line, row 3 is folded into its own block in
+    place (legal because rows 0-2 have not been written back yet), and only then
+    are the first three blocks overwritten. Peak scratch is one state, down from
+    four, and the index arrays are gone entirely.
+    """
     pa = n - 1 - qa
     pb = n - 1 - qb
-    quarter_count = 1 << (n - 2)
+    hi, lo = max(pa, pb), min(pa, pb)
 
-    # Precompute the i00 indices (qa-bit and qb-bit both 0) once per call.
-    lo = min(pa, pb); hi = max(pa, pb)
-    t = np.arange(quarter_count, dtype=np.int64)
-    low_mask = (1 << lo) - 1
-    mid_mask = (((1 << (hi - 1)) - 1) ^ low_mask) if hi > lo else 0
-    high_drop = (1 << (hi - 1)) - 1
-    i00 = (t & low_mask) | ((t & mid_mask) << 1) | ((t & ~high_drop) << 2)
-    mask_a = 1 << pa
-    mask_b = 1 << pb
-    i01 = i00 | mask_b
-    i10 = i00 | mask_a
-    i11 = i00 | mask_a | mask_b
+    C = 1 << lo                       # bits below the lower qubit
+    B = 1 << (hi - lo - 1)            # bits strictly between the two
+    A = 1 << (n - 1 - hi)             # bits above the higher qubit
+    v = state.reshape(A, 2, B, 2, C)
 
-    v00 = state[i00]; v01 = state[i01]; v10 = state[i10]; v11 = state[i11]
-    out = state.copy()
-    out[i00] = M[0, 0] * v00 + M[0, 1] * v01 + M[0, 2] * v10 + M[0, 3] * v11
-    out[i01] = M[1, 0] * v00 + M[1, 1] * v01 + M[1, 2] * v10 + M[1, 3] * v11
-    out[i10] = M[2, 0] * v00 + M[2, 1] * v01 + M[2, 2] * v10 + M[2, 3] * v11
-    out[i11] = M[3, 0] * v00 + M[3, 1] * v01 + M[3, 2] * v10 + M[3, 3] * v11
-    return out
+    # Gate row/column index is 2*(qa bit) + (qb bit); axis 1 carries the HIGHER
+    # bit position, so which qubit that is depends on their order.
+    if pa > pb:
+        blk = [v[:, i >> 1, :, i & 1, :] for i in range(4)]
+    else:
+        blk = [v[:, i & 1, :, i >> 1, :] for i in range(4)]
+
+    acc = [np.empty_like(blk[0]) for _ in range(3)]
+    prod = np.empty_like(blk[0])
+
+    for r in range(3):
+        np.multiply(blk[0], M[r, 0], out=acc[r])
+        for c in (1, 2, 3):
+            np.multiply(blk[c], M[r, c], out=prod)
+            acc[r] += prod
+
+    # Row 3 in place. blk[0..2] are still original, which is what makes it safe.
+    blk[3] *= M[3, 3]
+    for c in (0, 1, 2):
+        np.multiply(blk[c], M[3, c], out=prod)
+        blk[3] += prod
+
+    for r in range(3):
+        blk[r][:] = acc[r]
+
+    return state
 
 
 def run_circuit_strided(circuit, params: np.ndarray, dtype=np.complex64) -> np.ndarray:
