@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
-import mlx.core as mx
+from ._array import mx
 
 from .cutting import CutDecomposition
 

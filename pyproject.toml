@@ -22,7 +22,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "mlx>=0.18.0",
+    # MLX ships wheels for Apple silicon only, so an unconditional requirement
+    # made `pip install zilver` fail at resolution on every other platform --
+    # which confined the node fleet to Macs. The marker makes it optional;
+    # zilver/_array.py supplies a numpy-backed mlx.core when it is absent.
+    "mlx>=0.18.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "numpy>=1.24.0",
 ]
 
