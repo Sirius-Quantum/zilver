@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import numpy as np
-import mlx.core as mx
+from ._array import mx
 
 from .circuit import Circuit
 

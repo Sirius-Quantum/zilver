@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import Callable
-import mlx.core as mx
+from ._array import mx
 import numpy as np
 
 

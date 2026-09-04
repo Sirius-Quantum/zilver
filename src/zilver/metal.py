@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Sequence
 
 import numpy as np
-import mlx.core as mx
+from ._array import mx, HAS_MLX
 
 
 # ---------------------------------------------------------------------------
@@ -378,9 +378,20 @@ def _real_to_complex(state_real: mx.array) -> np.ndarray:
 _SUPPORTED = {"ry", "rx", "rz", "h", "x", "cnot", "cz", "rzz", "u3"}
 
 
+#: Whether this machine can actually dispatch the kernels above. False off
+#: Apple silicon, where zilver._array supplies a numpy stand-in for mlx.core.
+AVAILABLE = HAS_MLX
+
+
 def supports(circuit) -> bool:
-    """True if every gate in the circuit has a hand-written Metal kernel."""
-    return all(op.kind in _SUPPORTED for op in circuit._ops)
+    """True if this machine can run every gate in the circuit on Metal.
+
+    Two conditions, and the hardware one is not optional: the gates must all
+    have hand-written kernels AND Metal must exist. Checking only the gate set
+    made the backend selector in circuit.py choose "metal" on any machine,
+    because a circuit's gate list says nothing about the silicon under it.
+    """
+    return AVAILABLE and all(op.kind in _SUPPORTED for op in circuit._ops)
 
 
 def _run_uncompiled(circuit, params: mx.array, n: int) -> mx.array:

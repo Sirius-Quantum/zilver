@@ -386,7 +386,7 @@ def _gate_matrix_np(op, params: np.ndarray, dtype=np.complex64) -> np.ndarray:
         ], dtype=dtype)
 
     # Unknown kind: fall back to MLX gate_fn (one dispatch — acceptable as fallback).
-    import mlx.core as mx
+    from ._array import mx
     if pidx:
         p_mx = mx.array(np.asarray(params[pidx], dtype=np.float32))
         G_mx = op.gate_fn(p_mx)
@@ -499,7 +499,7 @@ def run_circuit(circuit, params: np.ndarray, fuse_max: int = 2) -> np.ndarray:
 
 def _apply_single_op(state: np.ndarray, op, params: np.ndarray, n: int) -> None:
     """Dispatch an unfused GateOp to its specialised kernel."""
-    import mlx.core as mx
+    from ._array import mx
     kind = op.kind
     qs = op.qubits
 
