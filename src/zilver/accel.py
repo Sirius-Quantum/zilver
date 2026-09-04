@@ -45,8 +45,26 @@ import os
 from typing import Sequence
 
 import numpy as np
-from numba import njit, prange
-import numba as _numba
+try:
+    from numba import njit, prange
+    import numba as _numba
+    HAS_NUMBA = True
+except ImportError:                       # pure-NumPy install: the strided
+    HAS_NUMBA = False                     # path below needs no JIT at all,
+    prange = range                        # but it lived behind this import,
+                                          # so x86 users without numba could
+    def njit(*args, **kwargs):            # not reach it. The decorated tape
+        """No-op stand-in. Only the tape path calls these; it checks
+        HAS_NUMBA first, so the undecorated bodies are never executed."""
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda f: f
+
+    class _numba:                         # telemetry stubs
+        @staticmethod
+        def get_num_threads(): return 1
+        @staticmethod
+        def set_num_threads(_n): return None
 
 
 def _configure_threads() -> int:
@@ -950,7 +968,12 @@ def run_circuit_auto(circuit, params: np.ndarray, dtype=np.complex64) -> np.ndar
     if dtype == np.complex128 or np.dtype(dtype) == np.complex128:
         return run_circuit_strided(circuit, params, dtype=np.complex128)
     try:
-        if n <= 14:
+        if n <= 14 or not HAS_NUMBA or os.environ.get("ZILVER_STRIDED") == "1":
+            # ZILVER_STRIDED forces the strided path at any size. It is slower
+            # than the numba tape but applies every gate IN PLACE, so its peak
+            # is about one extra state rather than several. On a memory-bound
+            # box that is the difference between finishing and being OOM-killed:
+            # the tape path peaked at 56 GB for an 8.6 GB state at 30 qubits.
             return run_circuit_strided(circuit, params, dtype=np.complex64)
         return run_circuit_tape(circuit, params)
     except NotImplementedError:
