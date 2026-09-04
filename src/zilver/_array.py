@@ -31,16 +31,148 @@ behaviours differ, and each is safe in exactly one direction:
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 __all__ = ["mx", "HAS_MLX"]
 
+def _torch_backend():
+    """mlx.core, backed by torch, so the statevector lives on whatever device
+    torch can see -- CUDA, ROCm, or Apple MPS.
+
+    This is the GPU path and it needs no gate kernels. simulator.apply_gate is
+    written entirely against `mx` (transpose, matmul, reshape), so swapping the
+    array layer moves the whole simulation onto the device unchanged. On an
+    integrated GPU with unified memory the state is never copied: it is
+    allocated once in shared memory and the device addresses it in place.
+
+    Why this is the right precision story on RDNA 3.5 and Apple alike: a
+    statevector is complex64, i.e. fp32 arithmetic, which consumer GPUs do
+    well. It is fp64 they cripple -- which is why quantum chemistry does not
+    belong here and simulation does.
+
+    Selected with ZILVER_BACKEND=torch; device with ZILVER_DEVICE
+    (default: cuda if visible -- ROCm reports as cuda -- else mps, else cpu).
+    """
+    import torch
+
+    dev = os.environ.get("ZILVER_DEVICE")
+    if dev is None:
+        if torch.cuda.is_available():
+            dev = "cuda"
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            dev = "mps"
+        else:
+            dev = "cpu"
+    DEVICE = torch.device(dev)
+
+    class _ArrMeta(type):
+        def __instancecheck__(cls, obj):
+            return isinstance(obj, torch.Tensor)
+
+    class _arr(metaclass=_ArrMeta):
+        def __new__(cls, x, dtype=None, **_k):
+            if isinstance(x, torch.Tensor):
+                return x.to(dtype=dtype, device=DEVICE) if dtype else x.to(DEVICE)
+            return torch.as_tensor(np.asarray(x), dtype=dtype, device=DEVICE)
+
+    class _Dev:
+        __slots__ = ("name",)
+        def __init__(self, name): self.name = name
+
+    class _Fast:
+        @staticmethod
+        def metal_kernel(*_a, **_k):
+            def _u(*_x, **_y):
+                raise RuntimeError("Metal kernels need MLX on Apple silicon.")
+            return _u
+
+    class _Metal:
+        @staticmethod
+        def get_peak_memory():
+            return int(torch.cuda.max_memory_allocated()) if DEVICE.type == "cuda" else 0
+        @staticmethod
+        def reset_peak_memory():
+            if DEVICE.type == "cuda": torch.cuda.reset_peak_memory_stats()
+        @staticmethod
+        def is_available(): return DEVICE.type != "cpu"
+
+    class _TorchMX:
+        device = DEVICE
+        complex64, complex128 = torch.complex64, torch.complex128
+        float32, float64 = torch.float32, torch.float64
+        int32, int64, uint32 = torch.int32, torch.int64, torch.int32
+        cpu, gpu = _Dev("cpu"), _Dev("gpu")
+        Device = Stream = _Dev
+        fast, metal = _Fast(), _Metal()
+        array = _arr
+
+        @staticmethod
+        def eval(*_a, **_k):
+            if DEVICE.type == "cuda": torch.cuda.synchronize()
+            elif DEVICE.type == "mps": torch.mps.synchronize()
+
+        @staticmethod
+        def compile(fn=None, **_k):
+            return (lambda f: f) if fn is None else fn
+
+        # transpose(x, perm) in MLX is a full permutation; torch.transpose
+        # swaps exactly two axes, so it must map to permute instead.
+        @staticmethod
+        def transpose(x, axes=None, **_k):
+            return x.permute(*axes) if axes is not None else x.t()
+
+        @staticmethod
+        def matmul(a, b, **_k): return torch.matmul(a, b)
+
+        @staticmethod
+        def zeros(shape, dtype=None, **_k):
+            return torch.zeros(shape, dtype=dtype or torch.float32, device=DEVICE)
+
+        @staticmethod
+        def eye(n, m=None, dtype=None, **_k):
+            return torch.eye(n, m or n, dtype=dtype or torch.float32, device=DEVICE)
+
+        @staticmethod
+        def arange(*a, dtype=None, **_k):
+            return torch.arange(*a, dtype=dtype, device=DEVICE)
+
+        @staticmethod
+        def vmap(fn, in_axes=0, out_axes=0, **_k):
+            def mapped(batch):
+                return torch.stack([fn(r) for r in batch]) if len(batch) else torch.tensor([])
+            return mapped
+
+        @staticmethod
+        def tolist(x): return x.detach().cpu().tolist()
+
+        def __getattr__(self, name):
+            attr = getattr(torch, name, None)
+            if attr is None:
+                raise AttributeError(f"torch has no {name!r} (zilver._array)")
+            if not callable(attr):
+                return attr
+            def _f(*a, **k):
+                k.pop("stream", None); k.pop("device", None)
+                return attr(*a, **k)
+            return _f
+
+    return _TorchMX(), DEVICE
+
+
+_WANT = os.environ.get("ZILVER_BACKEND", "").lower()
+
 try:                                     # Apple silicon: the real thing.
+    if _WANT == "torch":
+        raise ImportError("ZILVER_BACKEND=torch")
     import mlx.core as _mlx              # type: ignore[import-not-found]
     mx = _mlx
     HAS_MLX = True
-except ImportError:                      # everywhere else: numpy.
+except ImportError:                      # everywhere else: numpy, or torch.
     HAS_MLX = False
+    if _WANT == "torch":
+        mx, TORCH_DEVICE = _torch_backend()
 
     class _Device:
         """Inert stand-in for mx.Device / mx.Stream. There is one device."""
