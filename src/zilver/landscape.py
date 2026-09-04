@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import time
-import mlx.core as mx
+from ._array import mx
 import numpy as np
 
 

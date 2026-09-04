@@ -2,7 +2,7 @@
 
 import math
 import numpy as np
-import mlx.core as mx
+from ._array import mx
 
 
 # Fixed single-qubit gates
