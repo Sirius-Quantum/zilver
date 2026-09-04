@@ -45,8 +45,26 @@ import os
 from typing import Sequence
 
 import numpy as np
-from numba import njit, prange
-import numba as _numba
+try:
+    from numba import njit, prange
+    import numba as _numba
+    HAS_NUMBA = True
+except ImportError:                       # pure-NumPy install: the strided
+    HAS_NUMBA = False                     # path below needs no JIT at all,
+    prange = range                        # but it lived behind this import,
+                                          # so x86 users without numba could
+    def njit(*args, **kwargs):            # not reach it. The decorated tape
+        """No-op stand-in. Only the tape path calls these; it checks
+        HAS_NUMBA first, so the undecorated bodies are never executed."""
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda f: f
+
+    class _numba:                         # telemetry stubs
+        @staticmethod
+        def get_num_threads(): return 1
+        @staticmethod
+        def set_num_threads(_n): return None
 
 
 def _configure_threads() -> int:
@@ -386,7 +404,7 @@ def _gate_matrix_np(op, params: np.ndarray, dtype=np.complex64) -> np.ndarray:
         ], dtype=dtype)
 
     # Unknown kind: fall back to MLX gate_fn (one dispatch — acceptable as fallback).
-    import mlx.core as mx
+    from ._array import mx
     if pidx:
         p_mx = mx.array(np.asarray(params[pidx], dtype=np.float32))
         G_mx = op.gate_fn(p_mx)
@@ -499,7 +517,7 @@ def run_circuit(circuit, params: np.ndarray, fuse_max: int = 2) -> np.ndarray:
 
 def _apply_single_op(state: np.ndarray, op, params: np.ndarray, n: int) -> None:
     """Dispatch an unfused GateOp to its specialised kernel."""
-    import mlx.core as mx
+    from ._array import mx
     kind = op.kind
     qs = op.qubits
 
@@ -797,47 +815,100 @@ def run_circuit_tape(circuit, params: np.ndarray, tape: dict | None = None) -> n
 # ----------------------------------------------------------------------------
 
 def _apply_1q_numpy_strided(state: np.ndarray, M: np.ndarray, q: int, n: int) -> np.ndarray:
-    """Out-of-place 1q gate via pure NumPy reshape + vectorised arithmetic.
+    """In-place 1q gate via NumPy reshape + vectorised arithmetic.
 
-    Returns a fresh statevector. Out-of-place avoids the redundant copy that
-    in-place would need (since we'd otherwise read v[:, 0, :] *after* writing
-    it). For n ≤ ~14, NumPy on Accelerate beats threaded JIT.
+    MEMORY, WHICH IS THE POINT AT LARGE n. The obvious form allocates a whole
+    new statevector per gate (``out = np.empty_like(v)``) and one temporary per
+    product, so a circuit of ~3n gates churns several multiples of the state.
+    Measured on a 30-qubit run: 56 GB peak for an 8.6 GB state, and the process
+    was OOM-killed at 31 qubits on a 60 GB box -- by allocation overhead, not by
+    the state itself.
+
+    A 1q gate is block-diagonal in the (left, 2, stride) view: the halves mix
+    only with each other. Two HALF-sized scratch buffers therefore suffice, so
+    the peak is one extra state instead of several, and it is reused across the
+    two output rows. The order matters -- ``b`` is updated only after both rows
+    have read the original ``b``, and ``a`` only after ``tmp2`` has read the
+    original ``a``.
     """
     stride = 1 << (n - 1 - q)
     left   = 1 << q
     v = state.reshape(left, 2, stride)
-    out = np.empty_like(v)
-    out[:, 0, :] = M[0, 0] * v[:, 0, :] + M[0, 1] * v[:, 1, :]
-    out[:, 1, :] = M[1, 0] * v[:, 0, :] + M[1, 1] * v[:, 1, :]
-    return out.reshape(-1)
+    a = v[:, 0, :]
+    b = v[:, 1, :]
+
+    tmp  = np.empty_like(a)                 # holds the new upper half
+    tmp2 = np.empty_like(a)                 # scratch, reused
+
+    np.multiply(a, M[0, 0], out=tmp)        # tmp  = M00 a
+    np.multiply(b, M[0, 1], out=tmp2)       # tmp2 = M01 b
+    tmp += tmp2                             # tmp  = M00 a + M01 b
+
+    np.multiply(a, M[1, 0], out=tmp2)       # tmp2 = M10 a   (a still original)
+    b *= M[1, 1]                            # b    = M11 b   (b already consumed)
+    b += tmp2                               # b    = M10 a + M11 b
+    a[:] = tmp                              # a    = M00 a + M01 b
+
+    return state
 
 
 def _apply_2q_numpy_strided(state: np.ndarray, M: np.ndarray, qa: int, qb: int, n: int) -> np.ndarray:
-    """Out-of-place 2q gate via NumPy gather/multiply/scatter."""
+    """In-place 2q gate via reshape views. No index arrays.
+
+    THE MEMORY THIS REPLACES. The gather/scatter form built four int64 index
+    arrays of 2^(n-2) entries -- together exactly the size of the statevector --
+    then four gathered blocks (another whole state), then ``state.copy()``, then
+    a temporary per product. About 4x the state per two-qubit gate, which is
+    what OOM-killed a 31-qubit circuit on a 60 GB box.
+
+    None of it is needed. The two qubits sit at fixed bit positions, so
+    reshaping the flat state to ``(A, 2, B, 2, C)`` puts them on axes 1 and 3,
+    where C spans the bits below the lower qubit, B the bits between them, and
+    A the bits above the higher one. Each of the four amplitude blocks is then
+    a basic slice -- a VIEW, costing nothing -- and the gate is a 4x4 mix of
+    those views.
+
+    Three quarter-sized accumulators plus one product scratch is enough: rows 0
+    to 2 are accumulated out of line, row 3 is folded into its own block in
+    place (legal because rows 0-2 have not been written back yet), and only then
+    are the first three blocks overwritten. Peak scratch is one state, down from
+    four, and the index arrays are gone entirely.
+    """
     pa = n - 1 - qa
     pb = n - 1 - qb
-    quarter_count = 1 << (n - 2)
+    hi, lo = max(pa, pb), min(pa, pb)
 
-    # Precompute the i00 indices (qa-bit and qb-bit both 0) once per call.
-    lo = min(pa, pb); hi = max(pa, pb)
-    t = np.arange(quarter_count, dtype=np.int64)
-    low_mask = (1 << lo) - 1
-    mid_mask = (((1 << (hi - 1)) - 1) ^ low_mask) if hi > lo else 0
-    high_drop = (1 << (hi - 1)) - 1
-    i00 = (t & low_mask) | ((t & mid_mask) << 1) | ((t & ~high_drop) << 2)
-    mask_a = 1 << pa
-    mask_b = 1 << pb
-    i01 = i00 | mask_b
-    i10 = i00 | mask_a
-    i11 = i00 | mask_a | mask_b
+    C = 1 << lo                       # bits below the lower qubit
+    B = 1 << (hi - lo - 1)            # bits strictly between the two
+    A = 1 << (n - 1 - hi)             # bits above the higher qubit
+    v = state.reshape(A, 2, B, 2, C)
 
-    v00 = state[i00]; v01 = state[i01]; v10 = state[i10]; v11 = state[i11]
-    out = state.copy()
-    out[i00] = M[0, 0] * v00 + M[0, 1] * v01 + M[0, 2] * v10 + M[0, 3] * v11
-    out[i01] = M[1, 0] * v00 + M[1, 1] * v01 + M[1, 2] * v10 + M[1, 3] * v11
-    out[i10] = M[2, 0] * v00 + M[2, 1] * v01 + M[2, 2] * v10 + M[2, 3] * v11
-    out[i11] = M[3, 0] * v00 + M[3, 1] * v01 + M[3, 2] * v10 + M[3, 3] * v11
-    return out
+    # Gate row/column index is 2*(qa bit) + (qb bit); axis 1 carries the HIGHER
+    # bit position, so which qubit that is depends on their order.
+    if pa > pb:
+        blk = [v[:, i >> 1, :, i & 1, :] for i in range(4)]
+    else:
+        blk = [v[:, i & 1, :, i >> 1, :] for i in range(4)]
+
+    acc = [np.empty_like(blk[0]) for _ in range(3)]
+    prod = np.empty_like(blk[0])
+
+    for r in range(3):
+        np.multiply(blk[0], M[r, 0], out=acc[r])
+        for c in (1, 2, 3):
+            np.multiply(blk[c], M[r, c], out=prod)
+            acc[r] += prod
+
+    # Row 3 in place. blk[0..2] are still original, which is what makes it safe.
+    blk[3] *= M[3, 3]
+    for c in (0, 1, 2):
+        np.multiply(blk[c], M[3, c], out=prod)
+        blk[3] += prod
+
+    for r in range(3):
+        blk[r][:] = acc[r]
+
+    return state
 
 
 def run_circuit_strided(circuit, params: np.ndarray, dtype=np.complex64) -> np.ndarray:
@@ -897,7 +968,12 @@ def run_circuit_auto(circuit, params: np.ndarray, dtype=np.complex64) -> np.ndar
     if dtype == np.complex128 or np.dtype(dtype) == np.complex128:
         return run_circuit_strided(circuit, params, dtype=np.complex128)
     try:
-        if n <= 14:
+        if n <= 14 or not HAS_NUMBA or os.environ.get("ZILVER_STRIDED") == "1":
+            # ZILVER_STRIDED forces the strided path at any size. It is slower
+            # than the numba tape but applies every gate IN PLACE, so its peak
+            # is about one extra state rather than several. On a memory-bound
+            # box that is the difference between finishing and being OOM-killed:
+            # the tape path peaked at 56 GB for an 8.6 GB state at 30 qubits.
             return run_circuit_strided(circuit, params, dtype=np.complex64)
         return run_circuit_tape(circuit, params)
     except NotImplementedError:
