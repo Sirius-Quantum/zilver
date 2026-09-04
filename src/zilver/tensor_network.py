@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Sequence
 import numpy as np
-import mlx.core as mx
+from ._array import mx
 
 from . import gates as G
 

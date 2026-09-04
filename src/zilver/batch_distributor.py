@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-import mlx.core as mx
+from ._array import mx
 import numpy as np
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-import mlx.core as mx
+from ._array import mx
 import numpy as np
 
 # Pure-Python types shared with the registry (no MLX dependency there)
