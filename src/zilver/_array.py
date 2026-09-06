@@ -35,7 +35,7 @@ import os
 
 import numpy as np
 
-__all__ = ["mx", "HAS_MLX", "HAS_COMPLEX"]
+__all__ = ["mx", "HAS_MLX", "HAS_COMPLEX", "INPLACE_VIEWS"]
 
 def _torch_backend(no_complex_ok=True):
     """mlx.core, backed by torch, so the statevector lives on whatever device
@@ -291,9 +291,11 @@ try:                                     # Apple silicon: the real thing.
     mx = _mlx
     HAS_MLX = True
     HAS_COMPLEX = not _FORCE_REAL
+    INPLACE_VIEWS = True
 except ImportError:                      # everywhere else: numpy, or torch.
     HAS_MLX = False
     HAS_COMPLEX = not _FORCE_REAL
+    INPLACE_VIEWS = True
     if _WANT == "torch":
         # first pass: find the device, then decide whether complex is allowed
         mx, TORCH_DEVICE = _torch_backend()
@@ -305,6 +307,10 @@ except ImportError:                      # everywhere else: numpy, or torch.
         # raising, so this cannot be discovered by trying. Decide by device.
         HAS_COMPLEX = ("privateuseone" not in str(TORCH_DEVICE).lower()
                        and not _FORCE_REAL)
+        # DirectML silently IGNORES an in-place write through a reshaped view --
+        # no error, no effect, a wrong answer. Every other backend honours it,
+        # and honouring it is worth a whole qubit (see _apply_gate_strided).
+        INPLACE_VIEWS = "privateuseone" not in str(TORCH_DEVICE).lower()
 
     class _Device:
         """Inert stand-in for mx.Device / mx.Stream. There is one device."""

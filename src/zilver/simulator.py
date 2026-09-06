@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import Sequence
-from ._array import mx, HAS_COMPLEX
+from ._array import mx, HAS_COMPLEX, INPLACE_VIEWS
 import numpy as np
 
 
@@ -212,6 +212,38 @@ def _apply_gate_real(state, gate, qubits, n):
 _MAX_RANK = 16
 
 
+_INPLACE = None
+
+
+def _inplace_ok():
+    """Is an in-place write through a reshaped view actually honoured here?
+
+    DirectML accepts one and does nothing -- no error, a silently wrong state.
+    A capability flag is the first filter, but a reshape that quietly returns a
+    copy would fail the same way on any backend, so plant a known answer and
+    check it once: swap the halves of [0,1,2,3] through the same view the gate
+    uses. If the array does not come back [2,3,0,1], take the allocating path
+    forever.
+    """
+    global _INPLACE
+    if _INPLACE is None:
+        if not INPLACE_VIEWS:
+            _INPLACE = False
+        else:
+            try:
+                t = mx.array(np.arange(4, dtype=np.complex64)
+                             if HAS_COMPLEX else np.arange(4, dtype=np.float32))
+                w = t.reshape(2, 2)
+                lo, hi = w[0, :] * 1, w[1, :] * 1     # copies, not views
+                w[0, :] = hi
+                w[1, :] = lo
+                got = np.asarray(mx.tolist(t.reshape(-1)))
+                _INPLACE = bool(np.allclose(got.real, [2, 3, 0, 1]))
+            except Exception:
+                _INPLACE = False
+    return _INPLACE
+
+
 def _apply_gate_strided(state, gate, qubits, n):
     """apply_gate without an n-dimensional tensor.
 
@@ -235,6 +267,14 @@ def _apply_gate_strided(state, gate, qubits, n):
         a, b = v[:, 0, :], v[:, 1, :]
         out0 = gate[0, 0] * a + gate[0, 1] * b
         out1 = gate[1, 0] * a + gate[1, 1] * b
+        # Both halves are computed before either is stored, so writing them
+        # back through the view is safe -- and it skips the full-size array
+        # that mx.stack would allocate. Peak goes 3x state -> 2x, which is a
+        # whole qubit: at n=31, 48 GiB against a 49 GiB pool becomes 32.
+        if _inplace_ok():
+            v[:, 0, :] = out0
+            v[:, 1, :] = out1
+            return state
         return mx.stack([out0, out1], axis=1).reshape(-1)
 
     if k == 2:
@@ -251,6 +291,13 @@ def _apply_gate_strided(state, gate, qubits, n):
         else:
             blk = [v[:, i & 1, :, i >> 1, :] for i in range(4)]
         out = [sum(gate[r, c] * blk[c] for c in range(4)) for r in range(4)]
+        if _inplace_ok():
+            for i in range(4):
+                if pa > pb:
+                    v[:, i >> 1, :, i & 1, :] = out[i]
+                else:
+                    v[:, i & 1, :, i >> 1, :] = out[i]
+            return state
         if pa > pb:
             rows = [mx.stack([out[0], out[1]], axis=2), mx.stack([out[2], out[3]], axis=2)]
         else:
