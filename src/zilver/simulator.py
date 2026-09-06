@@ -85,7 +85,14 @@ class StateVector:
         # A device without a complex dtype carries the state as a real (2, 2**n)
         # pair, row 0 real and row 1 imaginary. Rejoin it here so callers never
         # see the representation.
+        # A device tensor cannot be handed to numpy directly -- DirectML says
+        # "can't convert privateuseone:0 device type" -- so come to the host
+        # first, once, before anything inspects shape or dtype.
         s = self._state
+        if hasattr(s, "detach"):
+            s = s.detach()
+        if hasattr(s, "cpu"):
+            s = s.cpu()
         shp = tuple(getattr(s, "shape", ()))
         dt = str(getattr(s, "dtype", ""))
         is_pair = (len(shp) == 2 and shp[0] == 2 and shp[1] == 2 ** self.n_qubits
@@ -96,14 +103,14 @@ class StateVector:
             # not redundant: shape alone also matches a genuinely complex state
             # that happens to be two rows wide, and casting one of those through
             # here silently discards the imaginary part.
-            a = np.asarray(s.cpu() if hasattr(s, "cpu") else s, dtype=np.float32)
+            a = np.asarray(s, dtype=np.float32)
             return (a[0] + 1j * a[1]).astype(np.complex64)
-        if isinstance(self._state, np.ndarray):
-            return self._state.astype(np.complex64, copy=False)
+        if isinstance(s, np.ndarray):
+            return s.astype(np.complex64, copy=False)
         try:
-            return np.asarray(self._state, dtype=np.complex64)
+            return np.asarray(s, dtype=np.complex64)
         except (TypeError, ValueError):
-            return np.array(self._state.tolist(), dtype=np.complex64)
+            return np.array(s.tolist(), dtype=np.complex64)
 
     def __repr__(self) -> str:
         return f"StateVector(n_qubits={self.n_qubits}, dtype={self.dtype})"
