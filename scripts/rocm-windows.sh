@@ -43,11 +43,21 @@ fi
 echo "  $ver"
 
 echo
-echo "=== 2. clone ==="
-ps '$r="$env:USERPROFILE\zilver-rocm"
-    if (Test-Path $r) { cd $r; git fetch -q --all; git checkout -q torch-backend; git pull -q }
-    else { git clone -q -b torch-backend https://github.com/Sirius-Quantum/zilver.git $r }
-    Write-Output "  at $r"'
+echo "=== 2. copy the repo across ==="
+# Not `git clone`: git is a WSL-side tool here and is not necessarily installed
+# on Windows. The working tree is already right here, so copy it rather than
+# add a dependency. Only src/ and scripts/ are needed to run.
+win_home=$(ps '$env:USERPROFILE' | tr -d '[:space:]')
+[ -z "$win_home" ] && { echo "  could not read USERPROFILE"; exit 1; }
+dest="/mnt/c${win_home#C:}"
+dest="${dest//\\//}/zilver-rocm"
+echo "  windows home : $win_home"
+echo "  copying to   : $dest"
+mkdir -p "$dest"
+cp -r src scripts pyproject.toml "$dest"/ 2>/dev/null
+ls "$dest/scripts/gpu.py" >/dev/null 2>&1 \
+  && echo "  ok, $(find "$dest/src" -name '*.py' | wc -l | tr -d ' ') python files" \
+  || { echo "  copy failed"; exit 1; }
 
 echo
 echo "=== 3. torch built for gfx1151 (AMD index) ==="
