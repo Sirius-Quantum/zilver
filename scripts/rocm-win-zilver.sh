@@ -44,6 +44,10 @@ find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
 echo "   $(find "$DEST" -name '*.py' | wc -l) files"
 
 cat > "$ROOT/runzilver.ps1" <<'PS1'
+# Widths arrive as ARGUMENTS, not environment variables. WSLENV can drop them silently, and
+# `$env:TO = $null` DELETES the variable rather than setting it -- so gpu.py fell back to its
+# own default of 28 while the bash side cheerfully announced 20->31. Arguments cannot do that.
+param([int]$From = 20, [int]$To = 31)
 $ErrorActionPreference = 'Continue'
 $root = Join-Path $env:USERPROFILE 'siriusq-rocm'
 $py   = Join-Path $root 'venv\Scripts\python.exe'
@@ -60,16 +64,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $env:ZILVER_BACKEND = 'torch'
-$env:FROM = $env:SQ_FROM
-$env:TO   = $env:SQ_TO
+$env:FROM = "$From"
+$env:TO   = "$To"
 Set-Location (Join-Path $root 'zilver')      # gpu.py does sys.path.insert(0, "src")
 & $py scripts\gpu.py
 exit $LASTEXITCODE
 PS1
 
 echo "-- running zilver on the ROCm device, $FROM -> $TO qubits"
-SQ_FROM=$FROM SQ_TO=$TO WSLENV="SQ_FROM/u:SQ_TO/u" \
-  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$ROOT_W\\runzilver.ps1" 2>&1 | tr -d '\r'
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+  -File "$ROOT_W\\runzilver.ps1" "$FROM" "$TO" 2>&1 | tr -d '\r'
 
 cat <<'NOTES'
 
