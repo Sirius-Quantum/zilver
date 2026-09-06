@@ -58,14 +58,30 @@ def _torch_backend():
     import torch
 
     dev = os.environ.get("ZILVER_DEVICE")
+    DEVICE = None
     if dev is None:
         if torch.cuda.is_available():
-            dev = "cuda"
+            DEVICE = torch.device("cuda")
         elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            dev = "mps"
+            DEVICE = torch.device("mps")
         else:
-            dev = "cpu"
-    DEVICE = torch.device(dev)
+            # DirectML: the route to an AMD or Intel GPU on Windows and inside
+            # WSL2, where ROCm's /dev/kfd does not exist but DirectX's /dev/dxg
+            # does. Not a torch.device string -- torch_directml hands back its
+            # own device object.
+            try:
+                import torch_directml
+                if torch_directml.device_count() > 0:
+                    DEVICE = torch_directml.device()
+            except ImportError:
+                pass
+            if DEVICE is None:
+                DEVICE = torch.device("cpu")
+    elif dev == "directml":
+        import torch_directml
+        DEVICE = torch_directml.device()
+    else:
+        DEVICE = torch.device(dev)
 
     class _ArrMeta(type):
         def __instancecheck__(cls, obj):
