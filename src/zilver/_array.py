@@ -37,7 +37,7 @@ import numpy as np
 
 __all__ = ["mx", "HAS_MLX", "HAS_COMPLEX"]
 
-def _torch_backend():
+def _torch_backend(no_complex_ok=True):
     """mlx.core, backed by torch, so the statevector lives on whatever device
     torch can see -- CUDA, ROCm, or Apple MPS.
 
@@ -56,6 +56,8 @@ def _torch_backend():
     (default: cuda if visible -- ROCm reports as cuda -- else mps, else cpu).
     """
     import torch
+
+    _NO_COMPLEX_OK = no_complex_ok
 
     dev = os.environ.get("ZILVER_DEVICE")
     DEVICE = None
@@ -89,6 +91,16 @@ def _torch_backend():
     # tensor the backend touches, which is uglier and slower.
     if not hasattr(torch.Tensor, "astype"):
         def _astype(self, dtype):
+            # The other door onto the device. mx.array() is guarded in _demote,
+            # but .astype() reaches the same place and bypasses it -- which is
+            # exactly how a complex tensor kept arriving on DirectML while MPS,
+            # which tolerates complex, showed nothing. Guard both doors.
+            if dtype in (torch.complex64, torch.complex128) and not _NO_COMPLEX_OK:
+                if self.device.type != "cpu":
+                    raise TypeError(
+                        f"complex astype on {self.device}, a device with no "
+                        f"complex dtype. On DirectML this aborts the process."
+                    )
             return self.to(dtype)
         torch.Tensor.astype = _astype
 
@@ -98,26 +110,59 @@ def _torch_backend():
 
     _F64_OK = DEVICE.type not in ("mps",) if hasattr(DEVICE, "type") else True
 
+    _COMPLEX = (torch.complex64, torch.complex128)
+
     def _demote(dt):
-        """MPS has no float64/complex128. A statevector is single precision by
-        construction, so silently narrowing is right here -- but only for the
-        device that cannot hold the wider type."""
+        """Narrow what the device cannot hold, and REFUSE what it cannot hold
+        at all.
+
+        DirectML has no complex dtype and does not raise on one -- it aborts the
+        process. That makes a stray complex tensor invisible until it kills a
+        run on the box, and untestable on MPS, which tolerates complex happily.
+        So when the backend has declared it has no complex support, asking for
+        one here is an error rather than a crash later. That turns any device
+        into a faithful stand-in for DirectML.
+        """
+        if dt in _COMPLEX and not _NO_COMPLEX_OK:
+            raise TypeError(
+                f"complex tensor requested on a device with no complex dtype "
+                f"({DEVICE}). On DirectML this aborts the process. The state "
+                f"must be carried as a real (2, N) pair."
+            )
         if _F64_OK or dt is None:
             return dt
         return {torch.float64: torch.float32,
                 torch.complex128: torch.complex64}.get(dt, dt)
 
+    def _guard(t):
+        """Nothing complex reaches a device that has none -- by any route.
+
+        There are three doors onto the device: an explicit dtype (caught in
+        _demote), .astype() on an existing tensor (caught in the patch above),
+        and simply passing an already-complex array with no dtype at all, which
+        both of those miss. Checking the RESULT instead of the request closes
+        all three, and turns a process abort on DirectML into a Python
+        traceback anywhere.
+        """
+        if t.is_complex() and not _NO_COMPLEX_OK and t.device.type != "cpu":
+            raise TypeError(
+                f"complex tensor on {t.device}, a device with no complex dtype. "
+                f"On DirectML this aborts the process. Carry the state as a "
+                f"real (2, N) pair instead."
+            )
+        return t
+
     class _arr(metaclass=_ArrMeta):
         def __new__(cls, x, dtype=None, **_k):
             dtype = _demote(dtype)
             if isinstance(x, torch.Tensor):
-                return x.to(dtype=dtype, device=DEVICE) if dtype else x.to(DEVICE)
+                return _guard(x.to(dtype=dtype, device=DEVICE) if dtype else x.to(DEVICE))
             a = np.asarray(x)
             if not _F64_OK and a.dtype == np.float64:
                 a = a.astype(np.float32)
             elif not _F64_OK and a.dtype == np.complex128:
                 a = a.astype(np.complex64)
-            return torch.as_tensor(a, dtype=dtype, device=DEVICE)
+            return _guard(torch.as_tensor(a, dtype=dtype, device=DEVICE))
 
     class _Dev:
         __slots__ = ("name",)
@@ -230,7 +275,12 @@ except ImportError:                      # everywhere else: numpy, or torch.
     HAS_MLX = False
     HAS_COMPLEX = not _FORCE_REAL
     if _WANT == "torch":
+        # first pass: find the device, then decide whether complex is allowed
         mx, TORCH_DEVICE = _torch_backend()
+        _dev_no_complex = ("privateuseone" in str(TORCH_DEVICE).lower()
+                           or _FORCE_REAL)
+        if _dev_no_complex:
+            mx, TORCH_DEVICE = _torch_backend(no_complex_ok=False)
         # DirectML has no ComplexFloat and ABORTS the process rather than
         # raising, so this cannot be discovered by trying. Decide by device.
         HAS_COMPLEX = ("privateuseone" not in str(TORCH_DEVICE).lower()
