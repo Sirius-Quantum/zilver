@@ -261,6 +261,9 @@ class Circuit:
         # so CPU parameters keep the whole construction on the host, where
         # complex64 is fine.
         import torch
+        # params may already be on the device; numpy cannot read that.
+        if hasattr(params, "detach"):
+            params = params.detach().cpu()
         p_cpu = torch.as_tensor(np.asarray(params, dtype=np.float32).ravel())
 
         for op in self._ops:
