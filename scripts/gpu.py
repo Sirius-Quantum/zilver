@@ -7,8 +7,13 @@ Prints the device it got, then one line per width: seconds and the state norm.
 Norm is the correctness check that costs nothing -- a unitary circuit ends at
 1.0, so anything else means the arithmetic drifted.
 """
-import os, sys, time
+import faulthandler, os, sys, time
 import numpy as np
+
+# DirectML aborts the process on an unsupported dtype rather than raising, so a
+# normal traceback never appears. faulthandler prints the Python stack on a
+# fatal signal, which is the only way to see WHERE from outside the box.
+faulthandler.enable()
 
 sys.path.insert(0, "src")
 os.environ.setdefault("ZILVER_BACKEND", "torch")
