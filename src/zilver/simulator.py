@@ -31,7 +31,17 @@ class StateVector:
         # constructor runs on every circuit, so it undid the whole real-pair
         # path from the far end.
         if not HAS_COMPLEX:
-            self._state = array if not isinstance(array, np.ndarray) else mx.array(array)
+            # A complex numpy array here came from a CPU path (accel/numba runs
+            # the whole circuit in numpy complex64 and hands the result over).
+            # It has no business on a device that cannot hold complex -- pushing
+            # it there is what aborts DirectML. Keep it on the host.
+            if isinstance(array, np.ndarray):
+                if np.iscomplexobj(array):
+                    self._state_np = array.astype(np.complex64, copy=False)
+                else:
+                    self._state = mx.array(array)
+            else:
+                self._state = array
         elif isinstance(array, np.ndarray):
             # Preserve complex128 if given; only downcast unrecognised dtypes
             if array.dtype == np.complex128:

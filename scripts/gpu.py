@@ -35,7 +35,10 @@ for n in range(int(os.environ.get("FROM", "20")), int(os.environ.get("TO", "28")
     p = [0.1 * (i + 1) for i in range(pi)]
     try:
         t = time.perf_counter()
-        v = np.asarray(c.statevector(p).numpy())
+        # method="mlx" is the array-layer path -- the one that runs on the
+        # device. "auto" picks accel/numba when it is installed, which is a CPU
+        # path, so the default would time the CPU while printing a GPU name.
+        v = np.asarray(c.statevector(p, method="mlx").numpy())
         dt = time.perf_counter() - t
     except Exception as e:
         print(f"{n:>7}{gb:>10.2f}   {type(e).__name__}: {str(e)[:50]}")
