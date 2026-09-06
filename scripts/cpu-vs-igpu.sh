@@ -23,13 +23,20 @@ TO   = int(os.environ.get("TO",   "30"))
 U    = 1024 if os.uname().sysname == "Linux" else 1024**3
 
 def run(backend, n):
-    """Fresh interpreter state per backend: _array picks at import."""
+    """Fresh interpreter state per backend: _array picks at import.
+
+    Reports the device and the complex capability it ACTUALLY got. Without
+    that, a silent fallback to CPU looks exactly like a GPU result, and the
+    speedup column becomes CPU-vs-CPU without saying so.
+    """
     for m in [k for k in list(sys.modules) if k.startswith("zilver")]:
         del sys.modules[m]
     os.environ["ZILVER_BACKEND"] = backend
     from zilver.circuit import Circuit
+    _a = importlib.import_module("zilver._array")
     from zilver._array import mx
-    dev = getattr(importlib.import_module("zilver._array"), "TORCH_DEVICE", "cpu")
+    dev = getattr(_a, "TORCH_DEVICE", "cpu")
+    print(f"    [{backend}] device={dev} HAS_COMPLEX={_a.HAS_COMPLEX}", flush=True)
     c = Circuit(n); pi = 0
     for q in range(n):
         c.h(q); c.ry(q, pi); pi += 1
@@ -38,7 +45,10 @@ def run(backend, n):
     p = np.random.default_rng(0).uniform(0, 6.28, size=pi).astype(np.float32).tolist()
     base = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / U
     t = time.perf_counter()
-    v = np.asarray(c.statevector(p, method="mlx").numpy()).ravel()
+    v = np.asarray(c.statevector(p, method="mlx").numpy())
+    if v.ndim == 2 and v.shape[0] == 2:          # a pair that was not rejoined
+        v = v[0] + 1j * v[1]
+    v = v.ravel()
     dt = time.perf_counter() - t
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / U
     return dict(seconds=dt, peak_gb=rss, base_gb=base, device=str(dev),
