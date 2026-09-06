@@ -25,8 +25,17 @@ echo "=== 1. python on the Windows side ==="
 # an interpreter, so check for a real version string rather than exit status.
 ver=$(ps 'python --version' | grep -o 'Python 3\.[0-9]*' || true)
 if [ -z "$ver" ]; then
-  echo "  not installed -- fetching via winget (per-user, no admin needed)"
-  ps 'winget install --id Python.Python.3.12 -e --source winget --silent --accept-package-agreements --accept-source-agreements' | tail -4
+  echo "  not installed -- fetching the official installer (per-user, no admin)"
+  # Not winget: its package source is broken on this box (0x8a15000f, "data
+  # required by the source is missing") and repairing it wants admin. The
+  # python.org installer needs neither -- InstallAllUsers=0 keeps it per-user.
+  ps '$u="https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"
+      $f="$env:TEMP\py312.exe"
+      Write-Output "  downloading..."
+      Invoke-WebRequest -Uri $u -OutFile $f -UseBasicParsing
+      Write-Output "  installing (quiet, per-user)..."
+      Start-Process -FilePath $f -ArgumentList "/quiet","InstallAllUsers=0","PrependPath=1","Include_pip=1" -Wait
+      Write-Output "  done"' | tail -4
   ver=$(ps 'python --version' | grep -o 'Python 3\.[0-9]*' || true)
   [ -z "$ver" ] && ver=$(ps '& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" --version' | grep -o 'Python 3\.[0-9]*' || true)
 fi
