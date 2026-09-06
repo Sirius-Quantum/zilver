@@ -15,6 +15,12 @@
 #   ROCm venv is left exactly as rocm-win.sh made it.
 set -uo pipefail
 
+# --copies runs the measurement instrument instead of the sweep: it times every gate against a
+# bare copy of the same array, so the box's own reference copy becomes the denominator. Do this
+# BEFORE quoting any GB/s from this machine.
+WHAT=scripts/gpu.py
+[ "${1:-}" = "--copies" ] && WHAT=bench/copies_per_gate.py
+
 FROM=${FROM:-20}
 # No ceiling of ours. The sweep climbs until the hardware refuses, and the refusal IS the
 # measurement -- OOM names the memory wall, a TDR device-removal names the watchdog wall.
@@ -40,9 +46,11 @@ ROOT_W="$WINHOME_W\\siriusq-rocm"
 # powershell warn and can make python's relative sys.path insert miss.
 DEST="$ROOT/zilver"
 echo "-- copying source -> $ROOT_W\\zilver"
-rm -rf "$DEST"; mkdir -p "$DEST/scripts"
+rm -rf "$DEST"; mkdir -p "$DEST/scripts" "$DEST/bench"
 cp -r "$REPO/src" "$DEST/src"
 cp "$REPO/scripts/gpu.py" "$DEST/scripts/gpu.py"
+cp "$REPO/bench/copies_per_gate.py" "$DEST/bench/copies_per_gate.py"
+cp "$REPO/bench/coset_toy.py" "$DEST/bench/coset_toy.py"
 find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
 echo "   $(find "$DEST" -name '*.py' | wc -l) files"
 
@@ -50,7 +58,7 @@ cat > "$ROOT/runzilver.ps1" <<'PS1'
 # Widths arrive as ARGUMENTS, not environment variables. WSLENV can drop them silently, and
 # `$env:TO = $null` DELETES the variable rather than setting it -- so gpu.py fell back to its
 # own default of 28 while the bash side cheerfully announced 20->31. Arguments cannot do that.
-param([int]$From = 20, [int]$To = 40)
+param([int]$From = 20, [int]$To = 40, [string]$What = 'scripts/gpu.py')
 $ErrorActionPreference = 'Continue'
 $root = Join-Path $env:USERPROFILE 'siriusq-rocm'
 $py   = Join-Path $root 'venv\Scripts\python.exe'
@@ -70,13 +78,13 @@ $env:ZILVER_BACKEND = 'torch'
 $env:FROM = "$From"
 $env:TO   = "$To"
 Set-Location (Join-Path $root 'zilver')      # gpu.py does sys.path.insert(0, "src")
-& $py scripts\gpu.py
+& $py ($What -replace '/','\\')
 exit $LASTEXITCODE
 PS1
 
-echo "-- running zilver on the ROCm device, $FROM qubits upward until it refuses"
+echo "-- running $WHAT on the ROCm device"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-  -File "$ROOT_W\\runzilver.ps1" "$FROM" "$TO" 2>&1 | tr -d '\r'
+  -File "$ROOT_W\\runzilver.ps1" "$FROM" "$TO" "$WHAT" 2>&1 | tr -d '\r'
 
 cat <<'NOTES'
 
