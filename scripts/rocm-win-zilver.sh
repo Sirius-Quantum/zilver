@@ -18,11 +18,14 @@ set -uo pipefail
 FROM=${FROM:-20}
 TO=${TO:-31}
 
+# Resolve the repo BEFORE moving: $BASH_SOURCE is relative to the invoking cwd, so the
+# `cd /mnt/c` below would strand it. (powershell.exe warns and can refuse from a \\wsl.localhost
+# cwd, which is why the cd has to happen at all.)
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || { echo "STOP: cannot resolve repo root"; exit 1; }
+[ -d "$REPO/src/zilver" ] || { echo "STOP: no src/zilver under $REPO"; exit 1; }
+
 cd /mnt/c 2>/dev/null || { echo "STOP: no /mnt/c -- is this WSL with drive interop on?"; exit 1; }
 command -v powershell.exe >/dev/null || { echo "STOP: powershell.exe not on PATH"; exit 1; }
-
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-[ -d "$REPO/src/zilver" ] || { echo "STOP: no src/zilver under $REPO"; exit 1; }
 
 WINHOME_W=$(powershell.exe -NoProfile -NonInteractive -Command '[Console]::Out.Write($env:USERPROFILE)' 2>/dev/null | tr -d '\r')
 WINHOME=$(wslpath -u "$WINHOME_W")
