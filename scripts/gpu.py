@@ -21,6 +21,20 @@ os.environ.setdefault("ZILVER_BACKEND", "torch")
 import zilver._array as _a
 from zilver.circuit import Circuit
 
+
+def _free():
+    """Release cached device blocks between widths, whatever the backend."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        _a.mx.clear_cache()          # MLX's own pool, on Apple silicon
+    except Exception:
+        pass
+
 print(f"\n  device      : {getattr(_a, 'TORCH_DEVICE', 'cpu')}")
 print(f"  complex64   : {_a.HAS_COMPLEX}")
 print(f"\n{'qubits':>7}{'state GB':>10}{'seconds':>10}{'norm':>12}")
@@ -46,3 +60,8 @@ for n in range(int(os.environ.get("FROM", "20")), int(os.environ.get("TO", "28")
     if v.ndim == 2 and v.shape[0] == 2:
         v = v[0] + 1j * v[1]
     print(f"{n:>7}{gb:>10.2f}{dt:>10.2f}{np.linalg.norm(v):>12.7f}", flush=True)
+    # Hand the pool back before the next width. A caching allocator keeps freed
+    # blocks, so without this the run dies with "free: 0" out of a mostly empty
+    # 49 GiB -- fragmentation, not capacity, and it costs a whole qubit.
+    del v
+    _free()
