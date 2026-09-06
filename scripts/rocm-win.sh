@@ -115,6 +115,16 @@ if [ ! -s "$EXE" ] || [ "$(stat -c%s "$EXE" 2>/dev/null || echo 0)" -lt 20000000
     || die "download failed"
 fi
 echo "installer: $(stat -c%s "$EXE") bytes at $ROOT_W\\python-$PY_VER-amd64.exe"
+
+# The installer is an MSI bundle and can no-op (see setup.ps1). Fetch the embeddable ZIP and
+# get-pip as well: a ZIP has no product code, no maintenance mode, nothing global to confuse it.
+ZIP="$ROOT/python-$PY_VER-embed-amd64.zip"
+[ -s "$ZIP" ] || curl -fsSL --retry 5 -o "$ZIP" \
+  "https://www.python.org/ftp/python/$PY_VER/python-$PY_VER-embed-amd64.zip" \
+  || echo "!! embeddable zip download failed (fallback unavailable)"
+GP="$ROOT/get-pip.py"
+[ -s "$GP" ] || curl -fsSL --retry 5 -o "$GP" https://bootstrap.pypa.io/get-pip.py \
+  || echo "!! get-pip.py download failed (fallback unavailable)"
 # Prove the WSL->Windows path mapping before anything depends on it. This is the exact step
 # that failed silently last time; make it loud.
 powershell.exe -NoProfile -NonInteractive -Command \
@@ -195,33 +205,105 @@ $pyDir  = Join-Path $root 'py312'
 $pyExe  = Join-Path $pyDir 'python.exe'
 $venv   = Join-Path $root 'venv'
 $venvPy = Join-Path $venv 'Scripts\python.exe'
-$setup  = Get-ChildItem (Join-Path $root 'python-*-amd64.exe') | Select-Object -First 1
 
-if (-not (Test-Path $pyExe)) {
-  if (-not $setup) { Write-Host "FAIL: no python-*-amd64.exe in $root (phase 1 did not land)"; exit 2 }
-  Write-Host "-- installing Python per-user into $pyDir (no UAC)"
-  # Include_launcher=0 removes the py.exe question entirely; InstallLauncherAllUsers=0 is belt
-  # and braces. TargetDir means we never have to find the interpreter on PATH afterwards.
-  $p = Start-Process -FilePath $setup.FullName -Wait -PassThru -ArgumentList @(
-        '/quiet','InstallAllUsers=0','InstallLauncherAllUsers=0','Include_launcher=0',
-        'PrependPath=0','AssociateFiles=0','Shortcuts=0',
-        'Include_test=0','Include_doc=0','Include_tcltk=0',"TargetDir=$pyDir")
-  Write-Host "   installer exit code: $($p.ExitCode)"
+# ---------------------------------------------------------------- find, THEN install
+# The python.org installer is an MSI bundle. If this exact version is already registered
+# anywhere on the box it runs in MAINTENANCE mode, exits 0, and silently ignores TargetDir.
+# "installer exit code: 0" + "no python.exe" is that, not a broken download. So look for
+# what is actually here before trying to install anything.
+function Test-Py($p) {
+  if (-not $p)                  { return $false }
+  if (-not (Test-Path $p))      { return $false }
+  if ($p -like '*WindowsApps*') { return $false }   # the Store alias stub: prints an advert, exits 0
+  try { $o = & $p -c "import sys,struct;print('%d.%d %d'%(sys.version_info[0],sys.version_info[1],struct.calcsize('P')*8))" 2>$null } catch { return $false }
+  if (-not $o) { return $false }
+  $f = "$o".Trim().Split(' ')
+  if ($f.Count -lt 2) { return $false }
+  $v = [version]$f[0]
+  return ($f[1] -eq '64' -and $v -ge [version]'3.10' -and $v -lt [version]'3.14')
 }
-if (-not (Test-Path $pyExe)) { Write-Host "FAIL: no python.exe at $pyExe"; exit 2 }
-& $pyExe -c "import sys; print('python         :', sys.version.split()[0], sys.executable)"
 
-if (-not (Test-Path $venvPy)) { Write-Host "-- creating venv"; & $pyExe -m venv $venv }
-if (-not (Test-Path $venvPy)) { Write-Host "FAIL: venv not created at $venv"; exit 2 }
+$cands = @($pyExe)
+foreach ($hive in 'HKCU:\SOFTWARE\Python\PythonCore','HKLM:\SOFTWARE\Python\PythonCore') {
+  Get-ChildItem $hive -ErrorAction SilentlyContinue | ForEach-Object {
+    $ip = (Get-ItemProperty (Join-Path $_.PSPath 'InstallPath') -ErrorAction SilentlyContinue).'(default)'
+    if ($ip) { $cands += (Join-Path $ip 'python.exe') }
+  }
+}
+foreach ($g in @((Join-Path $env:LOCALAPPDATA 'Programs\Python\Python3*\python.exe'),
+                 'C:\Python3*\python.exe',
+                 (Join-Path $root 'py3*\python.exe'))) {
+  $cands += (Get-ChildItem $g -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+}
+
+$found = $null
+Write-Host "-- interpreters visible to this user:"
+foreach ($c in ($cands | Where-Object { $_ } | Select-Object -Unique)) {
+  $ok = Test-Py $c
+  Write-Host ("   {0} {1}" -f $(if ($ok) { 'USABLE' } else { '  no  ' }), $c)
+  if ($ok -and -not $found) { $found = $c }
+}
+
+if (-not $found) {
+  $setup = Get-ChildItem (Join-Path $root 'python-*-amd64.exe') -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($setup) {
+    $log = Join-Path $root 'pyinstall.log'
+    Write-Host "-- nothing usable; running the installer WITH A LOG this time"
+    $p = Start-Process -FilePath $setup.FullName -Wait -PassThru -ArgumentList @(
+          '/quiet','/log',"`"$log`"",'InstallAllUsers=0','InstallLauncherAllUsers=0',
+          'Include_launcher=0','PrependPath=0','AssociateFiles=0','Shortcuts=0',
+          'Include_test=0','Include_doc=0','Include_tcltk=0',"TargetDir=$pyDir")
+    Write-Host "   installer exit code: $($p.ExitCode)"
+    if (Test-Path $log) {
+      Write-Host "   --- tail of $log ---"
+      Get-Content $log -Tail 30 | ForEach-Object { Write-Host "   $_" }
+    }
+    if (Test-Py $pyExe) { $found = $pyExe }
+  }
+}
+
+if (-not $found) {
+  # The embeddable package is a plain ZIP: no product code, no maintenance mode, nothing
+  # global to be confused by. It cannot no-op. Its ._pth pins sys.path and disables site,
+  # so both have to be undone before pip will work.
+  $zip = Get-ChildItem (Join-Path $root 'python-*-embed-amd64.zip') -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($zip) {
+    $eDir = Join-Path $root 'pyembed'
+    $ePy  = Join-Path $eDir 'python.exe'
+    Write-Host "-- falling back to the embeddable ZIP -> $eDir"
+    if (Test-Path $eDir) { Remove-Item $eDir -Recurse -Force }
+    Expand-Archive -Path $zip.FullName -DestinationPath $eDir -Force
+    Get-ChildItem (Join-Path $eDir 'python3*._pth') | ForEach-Object {
+      $t = @(Get-Content $_.FullName) -replace '^#\s*import site', 'import site'
+      if ($t -notcontains 'Lib\site-packages') { $t += 'Lib\site-packages' }
+      Set-Content $_.FullName $t
+    }
+    $gp = Join-Path $root 'get-pip.py'
+    if (Test-Path $gp) { & $ePy $gp --no-warn-script-location 2>&1 | Out-Host }
+    if (Test-Py $ePy) { $found = $ePy }
+  }
+}
+
+if (-not $found) { Write-Host "FAIL: no usable Python -- see the list above and the installer log"; exit 2 }
+& $found -c "import sys; print('python         :', sys.version.split()[0], sys.executable)"
+
+# A venv is a convenience, not a requirement. The embeddable build has no ensurepip, so it
+# installs into itself -- it is already an isolated tree.
+$RUNPY = $found
+if ($found -notlike '*pyembed*') {
+  if (-not (Test-Path $venvPy)) { Write-Host "-- creating venv"; & $found -m venv $venv 2>&1 | Out-Host }
+  if (Test-Path $venvPy) { $RUNPY = $venvPy } else { Write-Host "!! venv failed; installing into the interpreter directly" }
+}
+Write-Host "-- installing into: $RUNPY"
 
 Write-Host "-- pip install ROCm PyTorch (~1.1 GB: rocm-sdk-core, libraries, gfx1151 kernels, torch)"
 # index-url ONLY, never extra-index-url: this index carries its own numpy/sympy/filelock etc,
 # and adding PyPI would let pip resolve a plain CPU `torch` at a higher version and win.
-& $venvPy -m pip install --disable-pip-version-check --timeout 120 --retries 10 `
+& $RUNPY -m pip install --disable-pip-version-check --timeout 120 --retries 10 `
     --index-url INDEX_URL_PLACEHOLDER TORCH_PIN_PLACEHOLDER
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: pip install returned $LASTEXITCODE"; exit 3 }
 
-& $venvPy (Join-Path $root 'gpucheck.py')
+& $RUNPY (Join-Path $root 'gpucheck.py')
 exit $LASTEXITCODE
 PS1
 # Substituted rather than interpolated so the PowerShell heredoc stays literal.
