@@ -21,8 +21,17 @@ command -v powershell.exe >/dev/null || {
 ps() { powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$1" 2>&1 | tr -d '\r'; }
 
 echo "=== 1. python on the Windows side ==="
-ps 'python --version' || {
-  echo "  no python. Install 3.12 from the Microsoft Store, then re-run."; exit 1; }
+# A bare `python` on Windows may be the Microsoft Store alias stub rather than
+# an interpreter, so check for a real version string rather than exit status.
+ver=$(ps 'python --version' | grep -o 'Python 3\.[0-9]*' || true)
+if [ -z "$ver" ]; then
+  echo "  not installed -- fetching via winget (per-user, no admin needed)"
+  ps 'winget install --id Python.Python.3.12 -e --source winget --silent --accept-package-agreements --accept-source-agreements' | tail -4
+  ver=$(ps 'python --version' | grep -o 'Python 3\.[0-9]*' || true)
+  [ -z "$ver" ] && ver=$(ps '& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" --version' | grep -o 'Python 3\.[0-9]*' || true)
+fi
+[ -z "$ver" ] && { echo "  still no python on the Windows side; install it there and re-run"; exit 1; }
+echo "  $ver"
 
 echo
 echo "=== 2. clone ==="
