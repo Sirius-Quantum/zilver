@@ -196,9 +196,29 @@ def _torch_backend(no_complex_ok=True):
         array = _arr
 
         @staticmethod
-        def eval(*_a, **_k):
-            if DEVICE.type == "cuda": torch.cuda.synchronize()
-            elif DEVICE.type == "mps": torch.mps.synchronize()
+        def eval(*args, **_k):
+            """Flush the device queue.
+
+            On DirectML this is what keeps Windows from killing the process.
+            The GPU watchdog (TDR) times a single SUBMISSION, not a whole
+            circuit, and kills anything past ~2 seconds -- which at 27 qubits
+            took out the device mid-run ("D3D12: Removing Device"). Flushing
+            after each gate keeps every submission to one gate, tens of
+            milliseconds, so the watchdog never fires and no registry change or
+            admin rights are needed.
+
+            DirectML exposes no synchronize(), so a one-element read is used
+            instead: it forces the queue to drain before the value can be
+            returned.
+            """
+            if DEVICE.type == "cuda":
+                torch.cuda.synchronize()
+            elif DEVICE.type == "mps":
+                torch.mps.synchronize()
+            elif args:
+                a0 = args[0]
+                if isinstance(a0, torch.Tensor) and a0.numel():
+                    a0.flatten()[:1].cpu()
 
         @staticmethod
         def compile(fn=None, **_k):

@@ -275,6 +275,9 @@ class Circuit:
                            dtype=np.complex64)
             gr = mx.array(np.stack([g.real, g.imag]).astype(np.float32))
             state = _apply_gate_real(state, gr, op.qubits, n)
+            # One gate per submission: see mx.eval. Without this the GPU
+            # watchdog removes the device partway through a wide circuit.
+            mx.eval(state)
         return state
 
     def compile(
