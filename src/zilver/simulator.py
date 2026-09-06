@@ -211,12 +211,6 @@ def _apply_gate_real(state, gate, qubits, n):
 #: is at or below every other device's.
 _MAX_RANK = 16
 
-#: Elements per GPU operation. Windows removes the device if one operation runs
-#: past about two seconds; at 2^24 float32 (64 MB) each takes tens of
-#: milliseconds, so the watchdog never sees a long submission no matter how
-#: wide the circuit.
-_CHUNK_ELEMS = 1 << 24
-
 
 def _apply_gate_strided(state, gate, qubits, n):
     """apply_gate without an n-dimensional tensor.
@@ -233,39 +227,15 @@ def _apply_gate_strided(state, gate, qubits, n):
     device.
     """
     k = len(qubits)
-
-    # CHUNKED AND FUNCTIONAL. Two constraints meet here.
-    #
-    # Windows removes the device if one GPU operation runs past ~2 seconds, and
-    # at 27 qubits a single gate touches 1.07 GB in one op. So the work is cut
-    # into slices.
-    #
-    # But the slices are assembled with concatenate rather than written back
-    # into the state. In-place assignment through a reshaped view is not
-    # reliable on DirectML -- it silently did nothing there and produced a
-    # zero-norm state, while behaving correctly on MPS and numpy, so no local
-    # test could catch it. Building the result is slower and uses more memory;
-    # it is also the version that cannot quietly be wrong.
     if k == 1:
         q = qubits[0]
         stride = 1 << (n - 1 - q)
         left = 1 << q
         v = state.reshape(left, 2, stride)
-        g00, g01, g10, g11 = gate[0, 0], gate[0, 1], gate[1, 0], gate[1, 1]
-
-        per = max(1, _CHUNK_ELEMS // max(stride, 1))
-        if left >= 2 and left > per:
-            parts = []
-            for i0 in range(0, left, per):
-                a = v[i0:i0 + per, 0, :]
-                b = v[i0:i0 + per, 1, :]
-                parts.append(mx.stack([g00 * a + g01 * b,
-                                       g10 * a + g11 * b], axis=1))
-            return mx.concatenate(parts, axis=0).reshape(-1)
-
         a, b = v[:, 0, :], v[:, 1, :]
-        return mx.stack([g00 * a + g01 * b,
-                         g10 * a + g11 * b], axis=1).reshape(-1)
+        out0 = gate[0, 0] * a + gate[0, 1] * b
+        out1 = gate[1, 0] * a + gate[1, 1] * b
+        return mx.stack([out0, out1], axis=1).reshape(-1)
 
     if k == 2:
         qa, qb = qubits
@@ -275,28 +245,17 @@ def _apply_gate_strided(state, gate, qubits, n):
         B = 1 << (hi - lo - 1)
         A = 1 << (n - 1 - hi)
         v = state.reshape(A, 2, B, 2, C)
-        hi_is_a = pa > pb
-
-        def mix(w):
-            """Apply the 4x4 gate to one slice, returning it reassembled."""
-            if hi_is_a:
-                blk = [w[:, i >> 1, :, i & 1, :] for i in range(4)]
-            else:
-                blk = [w[:, i & 1, :, i >> 1, :] for i in range(4)]
-            out = [sum(gate[r, c] * blk[c] for c in range(4)) for r in range(4)]
-            if hi_is_a:
-                rows = [mx.stack([out[0], out[1]], axis=2),
-                        mx.stack([out[2], out[3]], axis=2)]
-            else:
-                rows = [mx.stack([out[0], out[2]], axis=2),
-                        mx.stack([out[1], out[3]], axis=2)]
-            return mx.stack(rows, axis=1)
-
-        per = max(1, _CHUNK_ELEMS // max(B * C * 4, 1))
-        if A > per:
-            parts = [mix(v[i0:i0 + per]) for i0 in range(0, A, per)]
-            return mx.concatenate(parts, axis=0).reshape(-1)
-        return mix(v).reshape(-1)
+        # gate index is 2*(qa bit) + (qb bit); axis 1 carries the higher bit
+        if pa > pb:
+            blk = [v[:, i >> 1, :, i & 1, :] for i in range(4)]
+        else:
+            blk = [v[:, i & 1, :, i >> 1, :] for i in range(4)]
+        out = [sum(gate[r, c] * blk[c] for c in range(4)) for r in range(4)]
+        if pa > pb:
+            rows = [mx.stack([out[0], out[1]], axis=2), mx.stack([out[2], out[3]], axis=2)]
+        else:
+            rows = [mx.stack([out[0], out[2]], axis=2), mx.stack([out[1], out[3]], axis=2)]
+        return mx.stack(rows, axis=1).reshape(-1)
 
     raise NotImplementedError(
         f"strided path covers 1- and 2-qubit gates; got {k}. "
