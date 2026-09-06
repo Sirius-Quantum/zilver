@@ -87,7 +87,15 @@ class StateVector:
         # see the representation.
         s = self._state
         shp = tuple(getattr(s, "shape", ()))
-        if len(shp) == 2 and shp[0] == 2 and shp[1] == 2 ** self.n_qubits:
+        dt = str(getattr(s, "dtype", ""))
+        is_pair = (len(shp) == 2 and shp[0] == 2 and shp[1] == 2 ** self.n_qubits
+                   and "complex" not in dt.lower())
+        if is_pair:
+            # A device with no complex dtype carries the state as a real
+            # (2, 2**n) pair, row 0 real and row 1 imaginary. The dtype test is
+            # not redundant: shape alone also matches a genuinely complex state
+            # that happens to be two rows wide, and casting one of those through
+            # here silently discards the imaginary part.
             a = np.asarray(s.cpu() if hasattr(s, "cpu") else s, dtype=np.float32)
             return (a[0] + 1j * a[1]).astype(np.complex64)
         if isinstance(self._state, np.ndarray):
