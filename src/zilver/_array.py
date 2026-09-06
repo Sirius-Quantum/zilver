@@ -35,7 +35,7 @@ import os
 
 import numpy as np
 
-__all__ = ["mx", "HAS_MLX"]
+__all__ = ["mx", "HAS_MLX", "HAS_COMPLEX"]
 
 def _torch_backend():
     """mlx.core, backed by torch, so the statevector lives on whatever device
@@ -178,6 +178,10 @@ def _torch_backend():
 
 
 _WANT = os.environ.get("ZILVER_BACKEND", "").lower()
+#: ZILVER_FORCE_REAL=1 pretends the device has no complex dtype, so the
+#: real-pair path can be verified against the complex one on a machine
+#: that supports both. On DirectML it is the only path.
+_FORCE_REAL = os.environ.get("ZILVER_FORCE_REAL") == "1"
 
 try:                                     # Apple silicon: the real thing.
     if _WANT == "torch":
@@ -185,10 +189,16 @@ try:                                     # Apple silicon: the real thing.
     import mlx.core as _mlx              # type: ignore[import-not-found]
     mx = _mlx
     HAS_MLX = True
+    HAS_COMPLEX = not _FORCE_REAL
 except ImportError:                      # everywhere else: numpy, or torch.
     HAS_MLX = False
+    HAS_COMPLEX = not _FORCE_REAL
     if _WANT == "torch":
         mx, TORCH_DEVICE = _torch_backend()
+        # DirectML has no ComplexFloat and ABORTS the process rather than
+        # raising, so this cannot be discovered by trying. Decide by device.
+        HAS_COMPLEX = ("privateuseone" not in str(TORCH_DEVICE).lower()
+                       and not _FORCE_REAL)
 
     class _Device:
         """Inert stand-in for mx.Device / mx.Stream. There is one device."""
