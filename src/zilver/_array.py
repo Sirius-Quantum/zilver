@@ -83,15 +83,41 @@ def _torch_backend():
     else:
         DEVICE = torch.device(dev)
 
+    # torch.Tensor has no .astype -- MLX does, and the gate definitions use it.
+    # Teach the class once rather than edit every call site. Monkeypatching a
+    # foreign class is ugly; the alternative is a wrapper type around every
+    # tensor the backend touches, which is uglier and slower.
+    if not hasattr(torch.Tensor, "astype"):
+        def _astype(self, dtype):
+            return self.to(dtype)
+        torch.Tensor.astype = _astype
+
     class _ArrMeta(type):
         def __instancecheck__(cls, obj):
             return isinstance(obj, torch.Tensor)
 
+    _F64_OK = DEVICE.type not in ("mps",) if hasattr(DEVICE, "type") else True
+
+    def _demote(dt):
+        """MPS has no float64/complex128. A statevector is single precision by
+        construction, so silently narrowing is right here -- but only for the
+        device that cannot hold the wider type."""
+        if _F64_OK or dt is None:
+            return dt
+        return {torch.float64: torch.float32,
+                torch.complex128: torch.complex64}.get(dt, dt)
+
     class _arr(metaclass=_ArrMeta):
         def __new__(cls, x, dtype=None, **_k):
+            dtype = _demote(dtype)
             if isinstance(x, torch.Tensor):
                 return x.to(dtype=dtype, device=DEVICE) if dtype else x.to(DEVICE)
-            return torch.as_tensor(np.asarray(x), dtype=dtype, device=DEVICE)
+            a = np.asarray(x)
+            if not _F64_OK and a.dtype == np.float64:
+                a = a.astype(np.float32)
+            elif not _F64_OK and a.dtype == np.complex128:
+                a = a.astype(np.complex64)
+            return torch.as_tensor(a, dtype=dtype, device=DEVICE)
 
     class _Dev:
         __slots__ = ("name",)
@@ -136,8 +162,18 @@ def _torch_backend():
         # transpose(x, perm) in MLX is a full permutation; torch.transpose
         # swaps exactly two axes, so it must map to permute instead.
         @staticmethod
-        def transpose(x, axes=None, **_k):
-            return x.permute(*axes) if axes is not None else x.t()
+        def transpose(x, *args, **kwargs):
+            """MLX transpose(x, axes) is a full permutation; torch.transpose
+            swaps exactly two axes, so this maps to permute. Callers pass the
+            permutation positionally, as `axes=`, or as loose ints."""
+            axes = kwargs.get("axes")
+            if axes is None and args:
+                axes = args[0] if len(args) == 1 else list(args)
+            if axes is None:
+                return x.t()
+            if isinstance(axes, int):
+                axes = [axes]
+            return x.permute(*[int(a) for a in axes])
 
         @staticmethod
         def matmul(a, b, **_k): return torch.matmul(a, b)
@@ -394,4 +430,10 @@ except ImportError:                      # everywhere else: numpy, or torch.
             _no_stream.__doc__ = getattr(attr, "__doc__", None)
             return _no_stream
 
-    mx = _NumpyMX()
+    # Only if the torch branch above did not already claim it. This assignment
+    # used to be unconditional, which silently threw the torch backend away on
+    # every machine without MLX -- so ZILVER_BACKEND=torch built a device,
+    # reported it, and then ran numpy on the CPU. A benchmark comparing "GPU"
+    # against "CPU" was comparing CPU against CPU and looked entirely healthy.
+    if "mx" not in dir():
+        mx = _NumpyMX()
