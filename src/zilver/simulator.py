@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import Sequence
-from ._array import mx
+from ._array import mx, HAS_COMPLEX
 import numpy as np
 
 
@@ -25,7 +25,14 @@ class StateVector:
             state[0] = 1.0
             self._state = mx.array(state)
             return
-        if isinstance(array, np.ndarray):
+        # On a device with no complex dtype the state arrives as a real
+        # (2, 2**n) pair and must stay that way. Casting it back to complex here
+        # is what DirectML answers by aborting the process -- and this
+        # constructor runs on every circuit, so it undid the whole real-pair
+        # path from the far end.
+        if not HAS_COMPLEX:
+            self._state = array if not isinstance(array, np.ndarray) else mx.array(array)
+        elif isinstance(array, np.ndarray):
             # Preserve complex128 if given; only downcast unrecognised dtypes
             if array.dtype == np.complex128:
                 self._state_np = array
@@ -116,6 +123,28 @@ class StateVector:
         return f"StateVector(n_qubits={self.n_qubits}, dtype={self.dtype})"
 
 
+def _apply_gate_real_strided(state, gate, qubits, n):
+    """The real-pair gate, without an n-dimensional tensor.
+
+    Composes the two constructions already verified separately: the real
+    lifting (a complex product is a real one of twice the size) and the strided
+    view (a gate needs 3 or 5 axes, never n). With psi = a + i b and
+    G = P + i Q,
+
+        out_re = P a - Q b
+        out_im = Q a + P b
+
+    and each of those four products is a REAL gate applied to a REAL vector --
+    exactly what _apply_gate_strided does. So this is four calls to code that is
+    already tested, rather than a fifth hand-written index dance.
+    """
+    P, Q = gate[0], gate[1]
+    a, b = state[0], state[1]
+    out_re = _apply_gate_strided(a, P, qubits, n) - _apply_gate_strided(b, Q, qubits, n)
+    out_im = _apply_gate_strided(a, Q, qubits, n) + _apply_gate_strided(b, P, qubits, n)
+    return mx.stack([out_re, out_im])
+
+
 def _apply_gate_real(state, gate, qubits, n):
     """apply_gate for a device that has no complex dtype.
 
@@ -139,6 +168,12 @@ def _apply_gate_real(state, gate, qubits, n):
     """
     k = len(qubits)
     qubits = list(qubits)
+
+    # Same rank ceiling, one axis lower: the real pair carries a leading
+    # component axis, so the reshape below builds n+1 axes, not n.
+    if k <= 2 and n + 1 > _MAX_RANK:
+        return _apply_gate_real_strided(state, gate, qubits, n)
+
     other = [i for i in range(n) if i not in qubits]
     perm = qubits + other
     inv = [0] * n
