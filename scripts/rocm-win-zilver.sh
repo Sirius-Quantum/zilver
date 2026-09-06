@@ -19,7 +19,12 @@ set -uo pipefail
 # bare copy of the same array, so the box's own reference copy becomes the denominator. Do this
 # BEFORE quoting any GB/s from this machine.
 WHAT=scripts/gpu.py
-[ "${1:-}" = "--copies" ] && WHAT=bench/copies_per_gate.py
+case "${1:-}" in
+  --copies) WHAT=bench/copies_per_gate.py ;;   # the instrument: reference copy + q sweep
+  --check)  WHAT=bench/fused_check.py ;;       # planted answers for the fused/framed algorithm
+  "")       ;;
+  *) echo "unknown flag: $1  (--copies | --check)"; exit 2 ;;
+esac
 
 FROM=${FROM:-20}
 # No ceiling of ours. The sweep climbs until the hardware refuses, and the refusal IS the
