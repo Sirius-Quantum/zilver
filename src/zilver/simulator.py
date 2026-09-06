@@ -211,6 +211,12 @@ def _apply_gate_real(state, gate, qubits, n):
 #: is at or below every other device's.
 _MAX_RANK = 16
 
+#: Elements per GPU operation. Windows removes the device if one operation runs
+#: past about two seconds; at 2^24 float32 (64 MB) each takes tens of
+#: milliseconds, so the watchdog never sees a long submission no matter how
+#: wide the circuit.
+_CHUNK_ELEMS = 1 << 24
+
 
 def _apply_gate_strided(state, gate, qubits, n):
     """apply_gate without an n-dimensional tensor.
@@ -232,10 +238,35 @@ def _apply_gate_strided(state, gate, qubits, n):
         stride = 1 << (n - 1 - q)
         left = 1 << q
         v = state.reshape(left, 2, stride)
-        a, b = v[:, 0, :], v[:, 1, :]
-        out0 = gate[0, 0] * a + gate[0, 1] * b
-        out1 = gate[1, 0] * a + gate[1, 1] * b
-        return mx.stack([out0, out1], axis=1).reshape(-1)
+
+        # CHUNKED, because Windows kills any single GPU operation that runs
+        # past ~2 seconds ("D3D12: Removing Device"), and at 27 qubits one gate
+        # touches 1.07 GB in one op. A gate is not atomic: the two halves mix
+        # independently along every other index, so the work splits into slices
+        # that each stay well under the watchdog. Raising TdrDelay would also
+        # work but needs administrator rights on the machine.
+        g00, g01, g10, g11 = gate[0, 0], gate[0, 1], gate[1, 0], gate[1, 1]
+        rows_per_chunk = max(1, _CHUNK_ELEMS // max(stride, 1))
+        # Both outputs are computed before either is written, so no copy of the
+        # input is needed -- the reads are finished before the aliasing views
+        # are overwritten. (.clone() would also work but is torch-only.)
+        if left >= 2:                                   # slice the outer axis
+            for i in range(0, left, rows_per_chunk):
+                j = min(i + rows_per_chunk, left)
+                a, b = v[i:j, 0, :], v[i:j, 1, :]
+                t0 = g00 * a + g01 * b
+                t1 = g10 * a + g11 * b
+                v[i:j, 0, :] = t0
+                v[i:j, 1, :] = t1
+        else:                                           # q = 0: slice the inner
+            for i in range(0, stride, _CHUNK_ELEMS):
+                j = min(i + _CHUNK_ELEMS, stride)
+                a, b = v[0, 0, i:j], v[0, 1, i:j]
+                t0 = g00 * a + g01 * b
+                t1 = g10 * a + g11 * b
+                v[0, 0, i:j] = t0
+                v[0, 1, i:j] = t1
+        return v.reshape(-1)
 
     if k == 2:
         qa, qb = qubits
@@ -246,16 +277,34 @@ def _apply_gate_strided(state, gate, qubits, n):
         A = 1 << (n - 1 - hi)
         v = state.reshape(A, 2, B, 2, C)
         # gate index is 2*(qa bit) + (qb bit); axis 1 carries the higher bit
-        if pa > pb:
-            blk = [v[:, i >> 1, :, i & 1, :] for i in range(4)]
+        hi_is_a = pa > pb
+
+        def blocks(sl):
+            """The four amplitude blocks of one slice, in gate-index order."""
+            if hi_is_a:
+                return [v[sl, i >> 1, :, i & 1, :] for i in range(4)]
+            return [v[sl, i & 1, :, i >> 1, :] for i in range(4)]
+
+        def write(sl, out):
+            for i in range(4):
+                if hi_is_a:
+                    v[sl, i >> 1, :, i & 1, :] = out[i]
+                else:
+                    v[sl, i & 1, :, i >> 1, :] = out[i]
+
+        # Chunked for the same reason as the 1q gate: one operation on a
+        # gigabyte trips the Windows GPU watchdog. All four outputs are formed
+        # before any is written, so the aliasing views stay valid.
+        per = max(1, _CHUNK_ELEMS // max(B * C, 1))
+        if A >= 2:
+            for i in range(0, A, per):
+                sl = slice(i, min(i + per, A))
+                blk = blocks(sl)
+                write(sl, [sum(gate[r, c] * blk[c] for c in range(4)) for r in range(4)])
         else:
-            blk = [v[:, i & 1, :, i >> 1, :] for i in range(4)]
-        out = [sum(gate[r, c] * blk[c] for c in range(4)) for r in range(4)]
-        if pa > pb:
-            rows = [mx.stack([out[0], out[1]], axis=2), mx.stack([out[2], out[3]], axis=2)]
-        else:
-            rows = [mx.stack([out[0], out[2]], axis=2), mx.stack([out[1], out[3]], axis=2)]
-        return mx.stack(rows, axis=1).reshape(-1)
+            blk = blocks(slice(None))
+            write(slice(None), [sum(gate[r, c] * blk[c] for c in range(4)) for r in range(4)])
+        return v.reshape(-1)
 
     raise NotImplementedError(
         f"strided path covers 1- and 2-qubit gates; got {k}. "
