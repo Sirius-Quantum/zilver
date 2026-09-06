@@ -2,7 +2,7 @@
 # Run ZILVER ITSELF on the Radeon 8060S through the native-Windows ROCm interpreter that
 # scripts/rocm-win.sh built. Driven from WSL; nothing is typed on the Windows side.
 #
-#   bash scripts/rocm-win-zilver.sh                 # 20 -> 31 qubits
+#   bash scripts/rocm-win-zilver.sh                 # 20 qubits -> whatever the box refuses at
 #   FROM=28 TO=32 bash scripts/rocm-win-zilver.sh
 #
 # WHY THERE IS NO CODE CHANGE AND NO INSTALL
@@ -16,7 +16,10 @@
 set -uo pipefail
 
 FROM=${FROM:-20}
-TO=${TO:-31}
+# No ceiling of ours. The sweep climbs until the hardware refuses, and the refusal IS the
+# measurement -- OOM names the memory wall, a TDR device-removal names the watchdog wall.
+# Guessing the stopping point from a previous run just reprints the previous run.
+TO=${TO:-40}
 
 # Resolve the repo BEFORE moving: $BASH_SOURCE is relative to the invoking cwd, so the
 # `cd /mnt/c` below would strand it. (powershell.exe warns and can refuse from a \\wsl.localhost
@@ -47,7 +50,7 @@ cat > "$ROOT/runzilver.ps1" <<'PS1'
 # Widths arrive as ARGUMENTS, not environment variables. WSLENV can drop them silently, and
 # `$env:TO = $null` DELETES the variable rather than setting it -- so gpu.py fell back to its
 # own default of 28 while the bash side cheerfully announced 20->31. Arguments cannot do that.
-param([int]$From = 20, [int]$To = 31)
+param([int]$From = 20, [int]$To = 40)
 $ErrorActionPreference = 'Continue'
 $root = Join-Path $env:USERPROFILE 'siriusq-rocm'
 $py   = Join-Path $root 'venv\Scripts\python.exe'
@@ -71,7 +74,7 @@ Set-Location (Join-Path $root 'zilver')      # gpu.py does sys.path.insert(0, "s
 exit $LASTEXITCODE
 PS1
 
-echo "-- running zilver on the ROCm device, $FROM -> $TO qubits"
+echo "-- running zilver on the ROCm device, $FROM qubits upward until it refuses"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
   -File "$ROOT_W\\runzilver.ps1" "$FROM" "$TO" 2>&1 | tr -d '\r'
 
