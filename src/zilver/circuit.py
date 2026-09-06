@@ -3,10 +3,10 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Sequence
-from ._array import mx
+from ._array import mx, HAS_COMPLEX
 import numpy as np
 
-from .simulator import apply_gate, expectation_pauli_sum, StateVector
+from .simulator import apply_gate, _apply_gate_real, expectation_pauli_sum, StateVector
 from . import gates as G
 
 
@@ -221,6 +221,9 @@ class Circuit:
 
     def _run(self, params: mx.array) -> mx.array:
         """Execute circuit, return final statevector."""
+        if not HAS_COMPLEX:
+            return self._run_real(params)
+
         init = np.zeros(2**self.n_qubits, dtype=np.complex64)
         init[0] = 1.0
         state = mx.array(init)
@@ -233,6 +236,42 @@ class Circuit:
                 gate = op.gate_fn(None)
             state = apply_gate(state, gate, op.qubits, self.n_qubits)
 
+        return state
+
+    def _run_real(self, params) -> "mx.array":
+        """Execute on a device with no complex dtype (DirectML).
+
+        Two things have to stay off the device: the STATE, carried instead as a
+        real (2, 2**n) pair, and the GATE, which gate_fn builds by casting to
+        complex64 -- a cast DirectML answers by aborting the process, not by
+        raising. So gates are built on the CPU in numpy, lifted to their real
+        block form there, and only the real result crosses to the device.
+
+        Gates are 2x2 or 4x4, so building them on the CPU costs nothing; the
+        state never leaves the GPU.
+        """
+        n = self.n_qubits
+        init = np.zeros((2, 2 ** n), dtype=np.float32)
+        init[0, 0] = 1.0
+        state = mx.array(init)
+
+        # Reuse the gate definitions rather than transcribing them into a
+        # second table -- a duplicated convention is a silent-wrong-answer
+        # waiting to happen. gate_fn is arithmetic over whatever it is handed,
+        # so CPU parameters keep the whole construction on the host, where
+        # complex64 is fine.
+        import torch
+        p_cpu = torch.as_tensor(np.asarray(params, dtype=np.float32).ravel())
+
+        for op in self._ops:
+            if op.param_indices:
+                g = op.gate_fn(p_cpu[list(op.param_indices)])
+            else:
+                g = op.gate_fn(None)            # already numpy, via gates._const
+            g = np.asarray(g if isinstance(g, np.ndarray) else g.numpy(),
+                           dtype=np.complex64)
+            gr = mx.array(np.stack([g.real, g.imag]).astype(np.float32))
+            state = _apply_gate_real(state, gr, op.qubits, n)
         return state
 
     def compile(

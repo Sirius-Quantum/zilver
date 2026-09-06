@@ -82,6 +82,14 @@ class StateVector:
         if self._state_np is not None:
             return self._state_np
         mx.eval(self._state)
+        # A device without a complex dtype carries the state as a real (2, 2**n)
+        # pair, row 0 real and row 1 imaginary. Rejoin it here so callers never
+        # see the representation.
+        s = self._state
+        shp = tuple(getattr(s, "shape", ()))
+        if len(shp) == 2 and shp[0] == 2 and shp[1] == 2 ** self.n_qubits:
+            a = np.asarray(s.cpu() if hasattr(s, "cpu") else s, dtype=np.float32)
+            return (a[0] + 1j * a[1]).astype(np.complex64)
         if isinstance(self._state, np.ndarray):
             return self._state.astype(np.complex64, copy=False)
         try:
@@ -91,6 +99,52 @@ class StateVector:
 
     def __repr__(self) -> str:
         return f"StateVector(n_qubits={self.n_qubits}, dtype={self.dtype})"
+
+
+def _apply_gate_real(state, gate, qubits, n):
+    """apply_gate for a device that has no complex dtype.
+
+    DirectML is the case in hand: it reaches an AMD or Intel GPU from Windows
+    and from inside WSL2, where ROCm's /dev/kfd does not exist, but it has no
+    ComplexFloat -- and it does not raise on one, it aborts the process.
+
+    A complex matrix-vector product is a real one of twice the size. Writing
+    psi = a + i b and G = P + i Q,
+
+        [out_re]   [ P  -Q ] [a]
+        [out_im] = [ Q   P ] [b]
+
+    so the state is carried as a real (2, 2**n) tensor -- row 0 real part, row
+    1 imaginary -- and each gate is lifted ONCE to its real block form. The hot
+    loop stays a single real matmul rather than four, and nothing downstream
+    branches on dtype.
+
+    metal.py solves the same problem the same way, carrying an interleaved
+    float32 array to dodge MLX's complex64 gap in custom kernels.
+    """
+    k = len(qubits)
+    qubits = list(qubits)
+    other = [i for i in range(n) if i not in qubits]
+    perm = qubits + other
+    inv = [0] * n
+    for i, p in enumerate(perm):
+        inv[p] = i
+
+    # (2, 2**n) -> (2, 2,2,...,2); axis 0 is the re/im component, so every
+    # qubit axis shifts by one.
+    t = state.reshape([2] + [2] * n)
+    t = mx.transpose(t, [0] + [p + 1 for p in perm])
+    t = t.reshape(2, 2 ** k, 2 ** (n - k))
+
+    P, Q = gate[0], gate[1]                       # real and imaginary blocks
+    a, b = t[0], t[1]
+    out_re = mx.matmul(P, a) - mx.matmul(Q, b)
+    out_im = mx.matmul(Q, a) + mx.matmul(P, b)
+
+    t = mx.stack([out_re, out_im])
+    t = t.reshape([2] + [2] * n)
+    t = mx.transpose(t, [0] + [i + 1 for i in inv])
+    return t.reshape(2, 2 ** n)
 
 
 def apply_gate(
