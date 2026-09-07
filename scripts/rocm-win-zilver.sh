@@ -86,6 +86,13 @@ foreach ($pkg in @("numpy", "ninja")) {
   }
 }
 
+# torch's cpp_extension does not import ninja -- it SHELLS OUT to ninja.exe. We invoke
+# python by absolute path and never activate the venv, so venv\Scripts was not on PATH
+# and the build failed with "Ninja is required" while `import ninja` succeeded.
+$env:PATH = (Split-Path $py) + ";" + $env:PATH
+$nj = Get-Command ninja -ErrorAction SilentlyContinue
+Write-Host ("-- ninja on PATH: {0}" -f $(if ($nj) { $nj.Source } else { "STILL MISSING" }))
+
 $env:ZILVER_BACKEND = 'torch'
 $env:FROM = "$From"
 $env:TO   = "$To"
