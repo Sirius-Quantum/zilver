@@ -1,6 +1,7 @@
 """Statevector simulation."""
 
 from __future__ import annotations
+import os
 from typing import Sequence
 from ._array import mx, HAS_COMPLEX, INPLACE_VIEWS
 import numpy as np
@@ -310,6 +311,71 @@ def _apply_gate_strided(state, gate, qubits, n):
     )
 
 
+
+_HIP_OFF = os.environ.get("ZILVER_HIP") == "0"
+
+
+def _hip_apply(state, gate, qubits, n):
+    """Apply the gate with the fused HIP kernel, in place. True if it did.
+
+    Why this matters beyond speed: every other path here allocates temporaries,
+    so a gate peaks at 2-3x the state and the widest circuit we can hold is set
+    by that multiple, not by the state itself. The kernel works out of registers
+    and needs 1x. On a 64 GiB device that is the difference between 32 qubits
+    and 33.
+
+    Declines quietly whenever anything does not line up -- wrong device, wrong
+    dtype, no ROCm -- because the caller's fallback is correct, just heavier.
+    """
+    if _HIP_OFF:
+        return False
+    from . import hip_ext
+    launch = hip_ext.kernel()
+    if launch is None:
+        return False
+    import torch
+    if not isinstance(state, torch.Tensor):
+        return False
+    if not (state.is_cuda and state.is_contiguous()
+            and state.dtype == torch.complex64):
+        return False
+    k = len(qubits)
+    if k not in (1, 2) or n <= k:
+        return False
+
+    from .fused import pivots_for
+    # zilver counts qubits from the most significant end; the kernel works in
+    # bit positions of the flat index, so q -> n-1-q.
+    try:
+        piv, masks, order = pivots_for([1 << (n - 1 - q) for q in qubits])
+    except ValueError:
+        return False
+
+    g = gate.detach().cpu().numpy() if hasattr(gate, "detach") else np.asarray(gate)
+    g = np.asarray(g, dtype=np.complex64).reshape(1 << k, 1 << k)
+
+    # The kernel's local index has bit b for masks[b]; zilver's gate index puts
+    # qubits[0] in the HIGH bit. pivots_for sorted the masks, so reorder to match.
+    gate_bit = [k - 1 - i for i in range(k)]
+    perm = np.empty(1 << k, dtype=np.int64)
+    for loc in range(1 << k):
+        gi = 0
+        for b in range(k):
+            if (loc >> b) & 1:
+                gi |= 1 << gate_bit[order[b]]
+        perm[loc] = gi
+    U = np.ascontiguousarray(g[np.ix_(perm, perm)])
+
+    dev = state.device
+    launch(state,
+           torch.tensor(masks, dtype=torch.int64, device=dev),
+           torch.tensor(piv, dtype=torch.int32, device=dev),
+           torch.zeros(k, dtype=torch.int64, device=dev),   # no deferred frame yet
+           torch.as_tensor(U, dtype=torch.complex64, device=dev),
+           k)
+    return True
+
+
 def apply_gate(
     state: mx.array,
     gate: mx.array,
@@ -338,6 +404,11 @@ def apply_gate(
     """
     k = len(qubits)
     qubits = list(qubits)
+
+    # The fused HIP kernel writes through the state and returns it, so it goes
+    # first: it is both faster and the only path that does not allocate.
+    if _hip_apply(state, gate, qubits, n):
+        return state
 
     # The reshape below builds a [2]*n tensor -- 20 axes at 20 qubits -- and GPU
     # backends cap tensor rank well under that (MPS refuses above 16). So 1- and
