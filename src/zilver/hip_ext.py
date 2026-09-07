@@ -28,8 +28,14 @@ _K = None
 _TRIED = False
 
 
-def _load(names):
-    """First DLL/so that loads, searching the ROCm pip package as well as PATH."""
+def _load(names, symbol):
+    """First library that loads AND exports `symbol`.
+
+    Names are not trustworthy here: ROCm ships hiprtc-builtins0715.dll beside
+    hiprtc0715.dll, the first is a bitcode blob with no API in it, and a glob
+    sorts '-' before '0' so it wins. Probing for the symbol is the only check
+    that means anything, and it costs nothing.
+    """
     roots = []
     try:
         import torch
@@ -53,14 +59,21 @@ def _load(names):
                 except OSError:
                     pass
 
+    tried = []
     for stem in names:
         for root in roots:
             pat = os.path.join(root, stem) if root else stem
-            for cand in ([pat] if not any(c in stem for c in "*?") else sorted(glob.glob(pat))):
+            cands = sorted(glob.glob(pat)) if any(c in stem for c in "*?") else [pat]
+            for cand in cands:
                 try:
-                    return ctypes.CDLL(cand), cand
+                    lib = ctypes.CDLL(cand)
                 except OSError:
                     continue
+                if hasattr(lib, symbol):
+                    return lib, cand
+                tried.append(os.path.basename(cand))
+    if tried:
+        print(f"[zilver] loaded but no {symbol}: {', '.join(sorted(set(tried)))}")
     return None, None
 
 
@@ -74,7 +87,8 @@ def _arch():
 
 def _compile(verbose=False):
     """hiprtc: source string in, device code object out. No host compiler."""
-    rtc, rtc_path = _load(["hiprtc*.dll", "libhiprtc.so*", "amdhip64*.dll"])
+    rtc, rtc_path = _load(["hiprtc*.dll", "libhiprtc.so*", "amdhip64*.dll",
+                           "libamdhip64.so*"], "hiprtcCreateProgram")
     if rtc is None:
         return None, "hiprtc library not found"
     if verbose:
@@ -146,7 +160,8 @@ def kernel(verbose=None):
         print(f"[zilver] hiprtc unavailable: {err}")
         return None
 
-    hip, hip_path = _load(["amdhip64*.dll", "libamdhip64.so*"])
+    hip, hip_path = _load(["amdhip64*.dll", "libamdhip64.so*"],
+                          "hipModuleLaunchKernel")
     if hip is None:
         print("[zilver] HIP runtime not found")
         return None
