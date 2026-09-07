@@ -23,8 +23,9 @@ case "${1:-}" in
   --copies) WHAT=bench/copies_per_gate.py ;;   # the instrument: reference copy + q sweep
   --check)  WHAT=bench/fused_check.py ;;       # planted answers for the fused/framed algorithm
   --hip)    WHAT=bench/hip_bench.py ;;         # COMPILE the kernel, prove it, price it
+  --mem)    WHAT=bench/mem_ceiling.py ;;       # how much of the 117 GB can the GPU really have
   "")       ;;
-  *) echo "unknown flag: $1  (--copies | --check | --hip)"; exit 2 ;;
+  *) echo "unknown flag: $1  (--copies | --check | --hip | --mem)"; exit 2 ;;
 esac
 
 FROM=${FROM:-20}
@@ -58,6 +59,7 @@ cp "$REPO/scripts/gpu.py" "$DEST/scripts/gpu.py"
 cp "$REPO/bench/copies_per_gate.py" "$DEST/bench/copies_per_gate.py"
 cp "$REPO/bench/coset_toy.py" "$DEST/bench/coset_toy.py"
 cp "$REPO/bench/hip_bench.py" "$DEST/bench/hip_bench.py"
+cp "$REPO/bench/mem_ceiling.py" "$DEST/bench/mem_ceiling.py"
 find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
 echo "   $(find "$DEST" -name '*.py' | wc -l) files"
 
