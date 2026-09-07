@@ -154,3 +154,116 @@ def kron_logical(mats) -> np.ndarray:
     for g in mats:                       # bit 0 is the fastest-varying
         U = np.kron(np.asarray(g, dtype=np.complex64), U)
     return U
+
+
+# ---------------------------------------------------------------------------
+# Running a whole circuit under the frame
+# ---------------------------------------------------------------------------
+
+_INDEX_GATES = {"cnot", "cx", "swap"}
+
+
+def run_framed(ops, gate_of, n, state, apply_fused, apply_cnot):
+    """Execute a circuit carrying CNOT/SWAP as a GF(2) index frame.
+
+    apply_fused(state, masks, pivots, rows, U, m) -- one fused pass
+    apply_cnot(state, control_pos, target_pos)    -- one CNOT, in place
+
+    Returns (state, passes). The frame absorbs every CNOT it meets and is paid
+    back ONCE at the end, so a circuit with d entangling layers costs one
+    materialisation instead of d. On a single ladder there is nothing to win --
+    the saving is in depth.
+
+    Three-qubit gates are not index-linear (Toffoli is quadratic), so the frame
+    is materialised before one and restarted after.
+    """
+    frame = GF2Frame(n)
+    deferred = []                     # (control_pos, target_pos), in order
+    passes = 0
+
+    def materialise(state, passes):
+        """Pay the frame back in ops that scale with n, not with circuit depth.
+
+        Replaying the deferred CNOTs one by one costs exactly what not deferring
+        them would have -- the first version of this did that and saved nothing,
+        which the equivalence test showed at once. The accumulated M is ONE
+        invertible matrix however many CNOTs built it, so factor it: eliminate M
+        to the identity, recording the row operations, and each is a CNOT.
+        d entangling layers then cost O(n^2) instead of d*(n-1).
+        """
+        cols = list(frame.cols)
+        # M as rows of bits: bit p of row r is (cols[r] >> p) & 1, i.e. M[p][r].
+        M = [sum(((cols[c] >> r) & 1) << c for c in range(n)) for r in range(n)]
+        recorded = []
+        for col in range(n):
+            piv = next((r for r in range(col, n) if (M[r] >> col) & 1), None)
+            if piv is None:
+                continue
+            if piv != col:
+                M[piv], M[col] = M[col], M[piv]
+                recorded.append(("swap", piv, col))
+            for r in range(n):
+                if r != col and (M[r] >> col) & 1:
+                    M[r] ^= M[col]
+                    recorded.append(("add", col, r))
+        # FORWARD order, and CNOT(col -> row), not the transpose. Determined by
+        # testing all four variants against the explicit gather out[x] = s[Mx]:
+        # only this one gives 0.000e+00. The other three preserve the norm
+        # exactly while being wrong by ~4, so a norm check cannot see them.
+        for kind, a, b in recorded:
+            if kind == "add":
+                state = apply_cnot(state, a, b)
+                passes += 1
+            else:
+                for c, t in ((a, b), (b, a), (a, b)):
+                    state = apply_cnot(state, c, t)
+                    passes += 3
+        deferred.clear()
+        frame.__init__(n)
+        return state, passes
+
+    for op in ops:
+        kind = (op.kind or "").lower()
+        qs = list(op.qubits)
+        pos = [n - 1 - q for q in qs]
+
+        if kind in _INDEX_GATES and len(qs) == 2:
+            if kind == "swap":
+                frame.swap(pos[0], pos[1])
+                deferred.extend([(pos[0], pos[1]), (pos[1], pos[0]), (pos[0], pos[1])])
+            else:
+                frame.cnot(pos[0], pos[1])
+                deferred.append((pos[0], pos[1]))
+            continue
+
+        if len(qs) > 2:
+            state, passes = materialise(state, passes)
+            raise NotImplementedError("3-qubit gates: materialise then use the plain path")
+
+        g = np.asarray(gate_of(op), dtype=np.complex64).reshape(1 << len(qs), 1 << len(qs))
+        masks0 = [frame.mask(p) for p in pos]
+        rows0 = [frame.row(p) for p in pos]
+        try:
+            piv, masks, order = pivots_for(masks0)
+        except ValueError:                       # dependent under this frame
+            state, passes = materialise(state, passes)
+            piv, masks, order = pivots_for([1 << p for p in pos])
+            rows0 = [0] * len(pos)
+
+        k = len(qs)
+        gate_bit = [k - 1 - i for i in range(k)]
+        perm = np.empty(1 << k, dtype=np.int64)
+        for loc in range(1 << k):
+            gi = 0
+            for b in range(k):
+                if (loc >> b) & 1:
+                    gi |= 1 << gate_bit[order[b]]
+            perm[loc] = gi
+        U = np.ascontiguousarray(g[np.ix_(perm, perm)])
+        rows = [rows0[i] for i in order]
+
+        state = apply_fused(state, masks, piv, rows, U, k)
+        passes += 1
+
+    state, passes = materialise(state, passes)
+    return state, passes
