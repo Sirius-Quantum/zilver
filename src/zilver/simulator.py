@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from typing import Sequence
-from ._array import mx
+from ._array import mx, HAS_COMPLEX, INPLACE_VIEWS
 import numpy as np
 
 
@@ -25,7 +25,24 @@ class StateVector:
             state[0] = 1.0
             self._state = mx.array(state)
             return
-        if isinstance(array, np.ndarray):
+        # On a device with no complex dtype the state arrives as a real
+        # (2, 2**n) pair and must stay that way. Casting it back to complex here
+        # is what DirectML answers by aborting the process -- and this
+        # constructor runs on every circuit, so it undid the whole real-pair
+        # path from the far end.
+        if not HAS_COMPLEX:
+            # A complex numpy array here came from a CPU path (accel/numba runs
+            # the whole circuit in numpy complex64 and hands the result over).
+            # It has no business on a device that cannot hold complex -- pushing
+            # it there is what aborts DirectML. Keep it on the host.
+            if isinstance(array, np.ndarray):
+                if np.iscomplexobj(array):
+                    self._state_np = array.astype(np.complex64, copy=False)
+                else:
+                    self._state = mx.array(array)
+            else:
+                self._state = array
+        elif isinstance(array, np.ndarray):
             # Preserve complex128 if given; only downcast unrecognised dtypes
             if array.dtype == np.complex128:
                 self._state_np = array
@@ -82,15 +99,215 @@ class StateVector:
         if self._state_np is not None:
             return self._state_np
         mx.eval(self._state)
-        if isinstance(self._state, np.ndarray):
-            return self._state.astype(np.complex64, copy=False)
+        # A device without a complex dtype carries the state as a real (2, 2**n)
+        # pair, row 0 real and row 1 imaginary. Rejoin it here so callers never
+        # see the representation.
+        # A device tensor cannot be handed to numpy directly -- DirectML says
+        # "can't convert privateuseone:0 device type" -- so come to the host
+        # first, once, before anything inspects shape or dtype.
+        s = self._state
+        if hasattr(s, "detach"):
+            s = s.detach()
+        if hasattr(s, "cpu"):
+            s = s.cpu()
+        shp = tuple(getattr(s, "shape", ()))
+        dt = str(getattr(s, "dtype", ""))
+        is_pair = (len(shp) == 2 and shp[0] == 2 and shp[1] == 2 ** self.n_qubits
+                   and "complex" not in dt.lower())
+        if is_pair:
+            # A device with no complex dtype carries the state as a real
+            # (2, 2**n) pair, row 0 real and row 1 imaginary. The dtype test is
+            # not redundant: shape alone also matches a genuinely complex state
+            # that happens to be two rows wide, and casting one of those through
+            # here silently discards the imaginary part.
+            a = np.asarray(s, dtype=np.float32)
+            return (a[0] + 1j * a[1]).astype(np.complex64)
+        if isinstance(s, np.ndarray):
+            return s.astype(np.complex64, copy=False)
         try:
-            return np.asarray(self._state, dtype=np.complex64)
+            return np.asarray(s, dtype=np.complex64)
         except (TypeError, ValueError):
-            return np.array(self._state.tolist(), dtype=np.complex64)
+            return np.array(s.tolist(), dtype=np.complex64)
 
     def __repr__(self) -> str:
         return f"StateVector(n_qubits={self.n_qubits}, dtype={self.dtype})"
+
+
+def _apply_gate_real_strided(state, gate, qubits, n):
+    """The real-pair gate, without an n-dimensional tensor.
+
+    Composes the two constructions already verified separately: the real
+    lifting (a complex product is a real one of twice the size) and the strided
+    view (a gate needs 3 or 5 axes, never n). With psi = a + i b and
+    G = P + i Q,
+
+        out_re = P a - Q b
+        out_im = Q a + P b
+
+    and each of those four products is a REAL gate applied to a REAL vector --
+    exactly what _apply_gate_strided does. So this is four calls to code that is
+    already tested, rather than a fifth hand-written index dance.
+    """
+    P, Q = gate[0], gate[1]
+    a, b = state[0], state[1]
+    out_re = _apply_gate_strided(a, P, qubits, n) - _apply_gate_strided(b, Q, qubits, n)
+    out_im = _apply_gate_strided(a, Q, qubits, n) + _apply_gate_strided(b, P, qubits, n)
+    return mx.stack([out_re, out_im])
+
+
+def _apply_gate_real(state, gate, qubits, n):
+    """apply_gate for a device that has no complex dtype.
+
+    DirectML is the case in hand: it reaches an AMD or Intel GPU from Windows
+    and from inside WSL2, where ROCm's /dev/kfd does not exist, but it has no
+    ComplexFloat -- and it does not raise on one, it aborts the process.
+
+    A complex matrix-vector product is a real one of twice the size. Writing
+    psi = a + i b and G = P + i Q,
+
+        [out_re]   [ P  -Q ] [a]
+        [out_im] = [ Q   P ] [b]
+
+    so the state is carried as a real (2, 2**n) tensor -- row 0 real part, row
+    1 imaginary -- and each gate is lifted ONCE to its real block form. The hot
+    loop stays a single real matmul rather than four, and nothing downstream
+    branches on dtype.
+
+    metal.py solves the same problem the same way, carrying an interleaved
+    float32 array to dodge MLX's complex64 gap in custom kernels.
+    """
+    k = len(qubits)
+    qubits = list(qubits)
+
+    # Same rank ceiling, one axis lower: the real pair carries a leading
+    # component axis, so the reshape below builds n+1 axes, not n.
+    if k <= 2 and n + 1 > _MAX_RANK:
+        return _apply_gate_real_strided(state, gate, qubits, n)
+
+    other = [i for i in range(n) if i not in qubits]
+    perm = qubits + other
+    inv = [0] * n
+    for i, p in enumerate(perm):
+        inv[p] = i
+
+    # (2, 2**n) -> (2, 2,2,...,2); axis 0 is the re/im component, so every
+    # qubit axis shifts by one.
+    t = state.reshape([2] + [2] * n)
+    t = mx.transpose(t, [0] + [p + 1 for p in perm])
+    t = t.reshape(2, 2 ** k, 2 ** (n - k))
+
+    P, Q = gate[0], gate[1]                       # real and imaginary blocks
+    a, b = t[0], t[1]
+    out_re = mx.matmul(P, a) - mx.matmul(Q, b)
+    out_im = mx.matmul(Q, a) + mx.matmul(P, b)
+
+    t = mx.stack([out_re, out_im])
+    t = t.reshape([2] + [2] * n)
+    t = mx.transpose(t, [0] + [i + 1 for i in inv])
+    return t.reshape(2, 2 ** n)
+
+
+#: Widest [2]*n reshape any backend here will accept. 16 is the MPS limit and
+#: is at or below every other device's.
+_MAX_RANK = 16
+
+
+_INPLACE = None
+
+
+def _inplace_ok():
+    """Is an in-place write through a reshaped view actually honoured here?
+
+    DirectML accepts one and does nothing -- no error, a silently wrong state.
+    A capability flag is the first filter, but a reshape that quietly returns a
+    copy would fail the same way on any backend, so plant a known answer and
+    check it once: swap the halves of [0,1,2,3] through the same view the gate
+    uses. If the array does not come back [2,3,0,1], take the allocating path
+    forever.
+    """
+    global _INPLACE
+    if _INPLACE is None:
+        if not INPLACE_VIEWS:
+            _INPLACE = False
+        else:
+            try:
+                t = mx.array(np.arange(4, dtype=np.complex64)
+                             if HAS_COMPLEX else np.arange(4, dtype=np.float32))
+                w = t.reshape(2, 2)
+                lo, hi = w[0, :] * 1, w[1, :] * 1     # copies, not views
+                w[0, :] = hi
+                w[1, :] = lo
+                got = np.asarray(mx.tolist(t.reshape(-1)))
+                _INPLACE = bool(np.allclose(got.real, [2, 3, 0, 1]))
+            except Exception:
+                _INPLACE = False
+    return _INPLACE
+
+
+def _apply_gate_strided(state, gate, qubits, n):
+    """apply_gate without an n-dimensional tensor.
+
+    The permutation form reshapes the state to [2]*n -- 28 axes at 28 qubits --
+    and every GPU backend caps tensor rank far below that. MPS refuses outright
+    ("MPS supports tensors with dimensions <= 16"), and DirectML has its own
+    limit. So the device path cannot use it at all above 16 qubits.
+
+    A gate does not need n axes. One qubit at position q splits the state into
+    (left, 2, stride) -- three axes, any n. Two qubits split it into
+    (A, 2, B, 2, C) -- five. That is what the strided CPU path in accel.py has
+    always done; this is the same view, expressed in `mx` so it runs on a
+    device.
+    """
+    k = len(qubits)
+    if k == 1:
+        q = qubits[0]
+        stride = 1 << (n - 1 - q)
+        left = 1 << q
+        v = state.reshape(left, 2, stride)
+        a, b = v[:, 0, :], v[:, 1, :]
+        out0 = gate[0, 0] * a + gate[0, 1] * b
+        out1 = gate[1, 0] * a + gate[1, 1] * b
+        # Both halves are computed before either is stored, so writing them
+        # back through the view is safe -- and it skips the full-size array
+        # that mx.stack would allocate. Peak goes 3x state -> 2x, which is a
+        # whole qubit: at n=31, 48 GiB against a 49 GiB pool becomes 32.
+        if _inplace_ok():
+            v[:, 0, :] = out0
+            v[:, 1, :] = out1
+            return state
+        return mx.stack([out0, out1], axis=1).reshape(-1)
+
+    if k == 2:
+        qa, qb = qubits
+        pa, pb = n - 1 - qa, n - 1 - qb
+        hi, lo = max(pa, pb), min(pa, pb)
+        C = 1 << lo
+        B = 1 << (hi - lo - 1)
+        A = 1 << (n - 1 - hi)
+        v = state.reshape(A, 2, B, 2, C)
+        # gate index is 2*(qa bit) + (qb bit); axis 1 carries the higher bit
+        if pa > pb:
+            blk = [v[:, i >> 1, :, i & 1, :] for i in range(4)]
+        else:
+            blk = [v[:, i & 1, :, i >> 1, :] for i in range(4)]
+        out = [sum(gate[r, c] * blk[c] for c in range(4)) for r in range(4)]
+        if _inplace_ok():
+            for i in range(4):
+                if pa > pb:
+                    v[:, i >> 1, :, i & 1, :] = out[i]
+                else:
+                    v[:, i & 1, :, i >> 1, :] = out[i]
+            return state
+        if pa > pb:
+            rows = [mx.stack([out[0], out[1]], axis=2), mx.stack([out[2], out[3]], axis=2)]
+        else:
+            rows = [mx.stack([out[0], out[2]], axis=2), mx.stack([out[1], out[3]], axis=2)]
+        return mx.stack(rows, axis=1).reshape(-1)
+
+    raise NotImplementedError(
+        f"strided path covers 1- and 2-qubit gates; got {k}. "
+        "Three-qubit gates decompose, or fall back to the permutation form on CPU."
+    )
 
 
 def apply_gate(
@@ -121,6 +338,14 @@ def apply_gate(
     """
     k = len(qubits)
     qubits = list(qubits)
+
+    # The reshape below builds a [2]*n tensor -- 20 axes at 20 qubits -- and GPU
+    # backends cap tensor rank well under that (MPS refuses above 16). So 1- and
+    # 2-qubit gates take the strided view instead: 3 and 5 axes, any n. Verified
+    # identical to this form at 1.7e-07, machine precision.
+    if k <= 2 and n > _MAX_RANK:
+        return _apply_gate_strided(state, gate, qubits, n)
+
     other = [i for i in range(n) if i not in qubits]
 
     perm = qubits + other

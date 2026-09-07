@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Run ZILVER ITSELF on the Radeon 8060S through the native-Windows ROCm interpreter that
+# scripts/rocm-win.sh built. Driven from WSL; nothing is typed on the Windows side.
+#
+#   bash scripts/rocm-win-zilver.sh                 # 20 qubits -> whatever the box refuses at
+#   FROM=28 TO=32 bash scripts/rocm-win-zilver.sh
+#
+# WHY THERE IS NO CODE CHANGE AND NO INSTALL
+#   ROCm's torch reports itself as `cuda`, so _array.py's existing torch backend selects it on
+#   the first branch -- the DirectML seam we built happens to be exactly the seam ROCm needs.
+#   And because the device string is not `privateuseone`, HAS_COMPLEX stays True: the real-pair
+#   lifting is bypassed and the statevector is carried as complex64, as it should be.
+#   zilver's only runtime dependency is numpy, and it is a src-layout package, so the source
+#   tree plus a cwd is a complete installation. Nothing is built, nothing is pinned, and the
+#   ROCm venv is left exactly as rocm-win.sh made it.
+set -uo pipefail
+
+# --copies runs the measurement instrument instead of the sweep: it times every gate against a
+# bare copy of the same array, so the box's own reference copy becomes the denominator. Do this
+# BEFORE quoting any GB/s from this machine.
+WHAT=scripts/gpu.py
+case "${1:-}" in
+  --copies) WHAT=bench/copies_per_gate.py ;;   # the instrument: reference copy + q sweep
+  --check)  WHAT=bench/fused_check.py ;;       # planted answers for the fused/framed algorithm
+  --hip)    WHAT=bench/hip_bench.py ;;         # COMPILE the kernel, prove it, price it
+  "")       ;;
+  *) echo "unknown flag: $1  (--copies | --check | --hip)"; exit 2 ;;
+esac
+
+FROM=${FROM:-20}
+# No ceiling of ours. The sweep climbs until the hardware refuses, and the refusal IS the
+# measurement -- OOM names the memory wall, a TDR device-removal names the watchdog wall.
+# Guessing the stopping point from a previous run just reprints the previous run.
+TO=${TO:-40}
+
+# Resolve the repo BEFORE moving: $BASH_SOURCE is relative to the invoking cwd, so the
+# `cd /mnt/c` below would strand it. (powershell.exe warns and can refuse from a \\wsl.localhost
+# cwd, which is why the cd has to happen at all.)
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || { echo "STOP: cannot resolve repo root"; exit 1; }
+[ -d "$REPO/src/zilver" ] || { echo "STOP: no src/zilver under $REPO"; exit 1; }
+
+cd /mnt/c 2>/dev/null || { echo "STOP: no /mnt/c -- is this WSL with drive interop on?"; exit 1; }
+command -v powershell.exe >/dev/null || { echo "STOP: powershell.exe not on PATH"; exit 1; }
+
+WINHOME_W=$(powershell.exe -NoProfile -NonInteractive -Command '[Console]::Out.Write($env:USERPROFILE)' 2>/dev/null | tr -d '\r')
+WINHOME=$(wslpath -u "$WINHOME_W")
+ROOT="$WINHOME/siriusq-rocm"
+ROOT_W="$WINHOME_W\\siriusq-rocm"
+[ -d "$ROOT" ] || { echo "STOP: $ROOT_W not found -- run scripts/rocm-win.sh first"; exit 1; }
+
+# Ship the source across. Copy rather than run over \\wsl.localhost: a UNC cwd makes
+# powershell warn and can make python's relative sys.path insert miss.
+DEST="$ROOT/zilver"
+echo "-- copying source -> $ROOT_W\\zilver"
+rm -rf "$DEST"; mkdir -p "$DEST/scripts" "$DEST/bench"
+cp -r "$REPO/src" "$DEST/src"
+cp "$REPO/scripts/gpu.py" "$DEST/scripts/gpu.py"
+cp "$REPO/bench/copies_per_gate.py" "$DEST/bench/copies_per_gate.py"
+cp "$REPO/bench/coset_toy.py" "$DEST/bench/coset_toy.py"
+cp "$REPO/bench/hip_bench.py" "$DEST/bench/hip_bench.py"
+find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
+echo "   $(find "$DEST" -name '*.py' | wc -l) files"
+
+cat > "$ROOT/runzilver.ps1" <<'PS1'
+# Widths arrive as ARGUMENTS, not environment variables. WSLENV can drop them silently, and
+# `$env:TO = $null` DELETES the variable rather than setting it -- so gpu.py fell back to its
+# own default of 28 while the bash side cheerfully announced 20->31. Arguments cannot do that.
+param([int]$From = 20, [int]$To = 40, [string]$What = 'scripts/gpu.py')
+$ErrorActionPreference = 'Continue'
+$root = Join-Path $env:USERPROFILE 'siriusq-rocm'
+$py   = Join-Path $root 'venv\Scripts\python.exe'
+if (-not (Test-Path $py)) { $py = Join-Path $root 'pyembed\python.exe' }
+if (-not (Test-Path $py)) { Write-Host "FAIL: no ROCm interpreter under $root"; exit 2 }
+Write-Host "-- interpreter: $py"
+
+# The AMD index carries no numpy -- that is the "Failed to initialize NumPy" warning torch
+# prints. Pull it from PyPI. numpy has no dependencies, so this cannot disturb the torch pin.
+# numpy: the AMD index does not carry it -- that is torch's "Failed to initialize NumPy".
+# ninja: torch's cpp_extension driver refuses to build without it. Neither has any
+# dependency that could disturb the torch pin.
+foreach ($pkg in @("numpy", "ninja")) {
+  & $py -c "import $pkg" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "-- installing $pkg from PyPI"
+    & $py -m pip install --disable-pip-version-check --quiet $pkg
+  }
+}
+
+# torch's cpp_extension does not import ninja -- it SHELLS OUT to ninja.exe. We invoke
+# python by absolute path and never activate the venv, so venv\Scripts was not on PATH
+# and the build failed with "Ninja is required" while `import ninja` succeeded.
+$env:PATH = (Split-Path $py) + ";" + $env:PATH
+$nj = Get-Command ninja -ErrorAction SilentlyContinue
+Write-Host ("-- ninja on PATH: {0}" -f $(if ($nj) { $nj.Source } else { "STILL MISSING" }))
+
+$env:ZILVER_BACKEND = 'torch'
+$env:FROM = "$From"
+$env:TO   = "$To"
+Set-Location (Join-Path $root 'zilver')      # gpu.py does sys.path.insert(0, "src")
+& $py ($What -replace '/','\\')
+exit $LASTEXITCODE
+PS1
+
+echo "-- running $WHAT on the ROCm device"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+  -File "$ROOT_W\\runzilver.ps1" "$FROM" "$TO" "$WHAT" 2>&1 | tr -d '\r'
+
+cat <<'NOTES'
+
+Read the header, not just the table:
+  device    : should be `cuda` -- that IS the Radeon through ROCm, not an NVIDIA card
+  complex64 : True means the real-pair lifting is off and the state is genuinely complex64
+
+Rerun a single width without recopying:
+  FROM=31 TO=31 bash scripts/rocm-win-zilver.sh
+NOTES

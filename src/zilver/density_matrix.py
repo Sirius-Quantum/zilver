@@ -29,6 +29,9 @@ def apply_gate_dm(rho: mx.array, gate: mx.array, qubits: Sequence[int], n: int) 
 
     # Reshape to (2, 2, ..., 2) with 2n axes
     # Axes 0..n-1 = row (ket) indices; axes n..2n-1 = col (bra) indices
+    # mx.transpose(x, perm), never x.transpose(perm): numpy and MLX take a full
+    # permutation, torch.Tensor.transpose swaps exactly TWO axes and rejects a list.
+    # The shim maps the function form onto permute; the method form is torch's own.
     rho_t = rho.reshape([2] * (2 * n))
 
     # --- Row application: U @ rho ---
@@ -41,11 +44,11 @@ def apply_gate_dm(rho: mx.array, gate: mx.array, qubits: Sequence[int], n: int) 
     for new_i, old_i in enumerate(perm_row):
         inv_row[old_i] = new_i
 
-    rho_t = rho_t.transpose(perm_row)
+    rho_t = mx.transpose(rho_t, perm_row)
     rho_t = rho_t.reshape(2 ** k, 2 ** (n - k) * 2 ** n)
     rho_t = gate.reshape(2 ** k, 2 ** k) @ rho_t
     rho_t = rho_t.reshape([2] * (2 * n))
-    rho_t = rho_t.transpose(inv_row)
+    rho_t = mx.transpose(rho_t, inv_row)
 
     # --- Column application: (U rho) @ U† ---
     # Move target col axes to the END for right-multiply by U†
@@ -58,12 +61,12 @@ def apply_gate_dm(rho: mx.array, gate: mx.array, qubits: Sequence[int], n: int) 
     for new_i, old_i in enumerate(perm_col):
         inv_col[old_i] = new_i
 
-    rho_t = rho_t.transpose(perm_col)
+    rho_t = mx.transpose(rho_t, perm_col)
     rho_t = rho_t.reshape(2 ** n * 2 ** (n - k), 2 ** k)
     gate_dag = gate.reshape(2 ** k, 2 ** k).conj().T
     rho_t = rho_t @ gate_dag
     rho_t = rho_t.reshape([2] * (2 * n))
-    rho_t = rho_t.transpose(inv_col)
+    rho_t = mx.transpose(rho_t, inv_col)
 
     return rho_t.reshape(dim, dim)
 
@@ -246,7 +249,10 @@ def expectation_z_dm(rho: mx.array, qubit: int, n: int) -> mx.array:
     sign = +1 if bit q is 0, -1 if bit q is 1.
     """
     dim = 2 ** n
-    diag = mx.array([rho[i, i] for i in range(dim)]).real
+    # mx.diagonal, not a comprehension: [rho[i, i] for i in ...] builds a PYTHON list
+    # of 2^n device scalars, which is 2^n round trips and then cannot be converted --
+    # np.asarray() of a list of device tensors raises. Every backend has diagonal.
+    diag = mx.diagonal(rho).real
     indices = mx.arange(dim)
     bit_q = (indices >> (n - 1 - qubit)) & 1
     signs = mx.array(1, dtype=mx.float32) - 2 * bit_q.astype(mx.float32)
