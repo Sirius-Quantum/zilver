@@ -126,16 +126,39 @@ def timeit(fn, reps=20, warm=5):
 ref = timeit(lambda: dst.copy_(src))
 gb = 2 * N * 8 / 1e9
 print(f"  reference copy {ref*1e3:8.2f} ms = {gb/ref:6.1f} GB/s  == 1.00 copies")
-print(f"\n  {'m':>3}{'positions':>26}{'ms/pass':>10}{'copies/pass':>13}{'per gate':>10}")
-for m, pos in ((1, [0]), (2, [0, 1]), (4, [0, 1, 2, 3]), (4, [0, 9, 17, 23])):
-    s = torch.randn(N, dtype=torch.complex64, device=dev)
-    U = kron_logical([H2] * m)
-    dt = timeit(lambda: run_fused(s, n, pos, U))
+# Sweep POSITION, because it is the variable everything turns on and the first
+# run compared our worst position against torch's best. copies_per_gate.py
+# indexes by zilver's q, where stride = 1 << (n-1-q), so p = n-1-q. Its measured
+# torch numbers are carried here so the rows line up.
+TORCH = {0: 4.28, 1: 4.26, 4: 4.26, 12: 4.30, 18: 6.07, 20: 5.48, 22: 6.99, 23: 7.00}
+
+print(f"\n  m=1, one gate, by position ({'p':>2} = bit of the flat index)")
+print(f"  {'p':>3}{'q':>4}{'stride':>12}{'ms':>9}{'copies':>9}{'torch@q':>9}{'gain':>7}")
+for q in (0, 1, 4, 12, 18, 20, 22, 23):
+    p_ = n - 1 - q
+    s_ = torch.randn(N, dtype=torch.complex64, device=dev)
+    U = kron_logical([H2])
+    dt = timeit(lambda: run_fused(s_, n, [p_], U))
     cp = dt / ref
-    print(f"  {m:>3}{str(pos):>26}{dt*1e3:>10.2f}{cp:>13.2f}{cp/m:>10.2f}")
+    t = TORCH[q]
+    print(f"  {p_:>3}{q:>4}{1 << p_:>12}{dt*1e3:>9.2f}{cp:>9.2f}{t:>9.2f}{t/cp:>6.1f}x")
+
+print(f"\n  fusion: which POSITIONS are fused decides coalescing, not how many")
+print(f"  {'m':>3}{'positions':>26}{'ms/pass':>10}{'copies':>9}{'per gate':>10}")
+for m, pos in ((2, [0, 1]), (2, [22, 23]),
+               (4, [0, 1, 2, 3]), (4, [20, 21, 22, 23]), (4, [0, 9, 17, 23])):
+    s_ = torch.randn(N, dtype=torch.complex64, device=dev)
+    U = kron_logical([H2] * m)
+    dt = timeit(lambda: run_fused(s_, n, pos, U))
+    cp = dt / ref
+    print(f"  {m:>3}{str(pos):>26}{dt*1e3:>10.2f}{cp:>9.2f}{cp/m:>10.2f}")
 
 print("""
-  torch path on this box measured 4.28 copies/gate (bench/copies_per_gate.py).
-  Pre-registered: 0.95-1.20 for m=1. Below 2.5x improvement over 4.28 kills the
-  traffic model. The mixed-stride row is the one that says whether arbitrary
-  positions really do fuse in one pass, or only adjacent ones do.""")
+  Pre-registered before any of this existed: 0.95-1.20 copies at m=1, and below
+  2.5x over the torch path kills the traffic model.
+
+  Read the FUSION table by which positions are fused, not by m. Coalescing is
+  set by the bits left FREE for the thread id, not the bits being fused: fuse
+  the low bits and consecutive threads land 2^m elements apart, wasting most of
+  every cache line. Fuse high bits and they land adjacent. So [20,21,22,23]
+  should beat [0,1,2,3] -- if it does not, that model is wrong.""")
