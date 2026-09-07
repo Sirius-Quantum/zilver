@@ -75,10 +75,15 @@ Write-Host "-- interpreter: $py"
 
 # The AMD index carries no numpy -- that is the "Failed to initialize NumPy" warning torch
 # prints. Pull it from PyPI. numpy has no dependencies, so this cannot disturb the torch pin.
-& $py -c "import numpy" 2>$null
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "-- installing numpy from PyPI (the ROCm index does not carry it)"
-  & $py -m pip install --disable-pip-version-check --quiet numpy
+# numpy: the AMD index does not carry it -- that is torch's "Failed to initialize NumPy".
+# ninja: torch's cpp_extension driver refuses to build without it. Neither has any
+# dependency that could disturb the torch pin.
+foreach ($pkg in @("numpy", "ninja")) {
+  & $py -c "import $pkg" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "-- installing $pkg from PyPI"
+    & $py -m pip install --disable-pip-version-check --quiet $pkg
+  }
 }
 
 $env:ZILVER_BACKEND = 'torch'
