@@ -4,7 +4,8 @@
 
 Three questions in order, and the second gates the third:
 
-  1. does it build on this box at all
+  1. does it COMPILE on this box at all -- at runtime, via hiprtc, so no ninja,
+     no MSVC, no pybind11 and no administrator are involved
   2. is it RIGHT -- checked against H-on-every-qubit, whose amplitudes are
      (-1)^popcount(x&y)/2^(n/2), so one wrong index shows up as a sign. Not
      against our own torch path, which would only prove they agree.
@@ -62,10 +63,10 @@ if not torch.cuda.is_available():
     sys.exit("  no device -- nothing to build for")
 os.environ.setdefault("ZILVER_BUILD_VERBOSE", "1")
 t0 = time.perf_counter()
-mod = hip_ext.kernel()
-print(f"  built          : {mod is not None}   ({time.perf_counter()-t0:.1f} s)")
-if mod is None:
-    sys.exit("  build failed -- the verbose log above is the answer")
+launch = hip_ext.kernel(verbose=True)
+print(f"  compiled       : {launch is not None}   ({time.perf_counter()-t0:.1f} s)")
+if launch is None:
+    sys.exit("  compile failed -- the reason is printed above")
 
 dev = torch.device("cuda")
 
@@ -74,12 +75,12 @@ def run_fused(state, n, positions, U):
     """Hand the kernel one pass over `positions`, no frame."""
     piv, masks, order = pivots_for([1 << p for p in positions])
     m = len(masks)
-    mod.fused(
+    launch(
         state,
         torch.tensor(masks, dtype=torch.int64, device=dev),
         torch.tensor(piv, dtype=torch.int32, device=dev),
         torch.zeros(m, dtype=torch.int64, device=dev),      # no frame
-        torch.as_tensor(np.ascontiguousarray(U), dtype=torch.complex64, device=dev),
+        torch.as_tensor(np.ascontiguousarray(U), dtype=torch.complex64, device=dev).contiguous(),
         m,
     )
     torch.cuda.synchronize()

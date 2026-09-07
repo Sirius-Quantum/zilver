@@ -1,55 +1,129 @@
-"""Compile and bind src/zilver/hip/fused_gate.hip, if this box has ROCm.
+"""Run src/zilver/hip/fused_gate.hip on the device, with no build toolchain.
 
-ROCm's pip wheels carry hipcc, so torch's extension builder compiles for
-gfx1151 with no HIP SDK and no administrator. Everything here is best-effort:
-`kernel()` returns None on any machine that cannot build it, and the caller
-falls back to the torch path.
+The obvious route -- torch.utils.cpp_extension -- drags in ninja, pybind11, and
+on Windows an MSVC host compiler for the C++ shim. Visual Studio Build Tools
+needs administrator, which we do not have on a borrowed box, so that route has a
+wall in it that no amount of pip can move.
+
+But the shim only ever existed to hand the kernel a device pointer, and torch
+already gives us one: `tensor.data_ptr()`. So compile the kernel at RUNTIME with
+hiprtc and launch it through the HIP driver API, both reached by ctypes. No
+ninja, no MSVC, no pybind11, no build directory -- the ROCm runtime that torch
+already loaded is the whole dependency.
+
+`kernel()` returns a callable, or None with a printed reason. Nothing here
+raises into the caller: a missing library is an answer.
 """
 
 from __future__ import annotations
 
+import ctypes
+import glob
 import os
 import pathlib
+import sys
 
 _SRC = pathlib.Path(__file__).parent / "hip" / "fused_gate.hip"
-_MOD = None
+_K = None
 _TRIED = False
 
-# A thin shim so the kernel is reachable from Python with tensors. The launch
-# geometry is the only decision here: one thread per coset, 2^m amplitudes each.
-_SHIM = r"""
-#include <torch/extension.h>
-#include <c10/cuda/CUDAStream.h>
-#include <hip/hip_runtime.h>
 
-extern "C" __global__ void fused_apply(
-    float2*, const unsigned long long*, const int*,
-    const unsigned long long*, const float2*, int, unsigned long long);
+def _load(names):
+    """First DLL/so that loads, searching the ROCm pip package as well as PATH."""
+    roots = []
+    try:
+        import torch
+        roots.append(os.path.join(os.path.dirname(torch.__file__), "lib"))
+    except Exception:
+        pass
+    for p in sys.path:
+        for sub in ("rocm_sdk_core", "_rocm_sdk_core"):
+            d = os.path.join(p, sub)
+            if os.path.isdir(d):
+                roots += [d, os.path.join(d, "bin"), os.path.join(d, "lib")]
+    roots += ["/opt/rocm/lib", "/opt/rocm/bin", ""]
 
-void fused(torch::Tensor state, torch::Tensor masks, torch::Tensor pivots,
-           torch::Tensor rows, torch::Tensor U, int64_t m) {
-  TORCH_CHECK(state.is_cuda(), "state must live on the device");
-  TORCH_CHECK(state.scalar_type() == torch::kComplexFloat, "state must be complex64");
-  TORCH_CHECK(state.is_contiguous(), "state must be contiguous");
-  const unsigned long long n_cosets = state.numel() >> m;
-  const int threads = 256;
-  const unsigned long long blocks = (n_cosets + threads - 1) / threads;
-  hipLaunchKernelGGL(fused_apply, dim3(blocks), dim3(threads), 0,
-      c10::cuda::getCurrentCUDAStream(),
-      reinterpret_cast<float2*>(state.data_ptr()),
-      reinterpret_cast<const unsigned long long*>(masks.data_ptr()),
-      pivots.data_ptr<int>(),
-      reinterpret_cast<const unsigned long long*>(rows.data_ptr()),
-      reinterpret_cast<const float2*>(U.data_ptr()),
-      static_cast<int>(m), n_cosets);
-}
+    # A ROCm DLL pulls in siblings, and ctypes will not find them unless the
+    # directory is registered. Silent on Linux, essential on Windows.
+    if hasattr(os, "add_dll_directory"):
+        for root in roots:
+            if root and os.path.isdir(root):
+                try:
+                    os.add_dll_directory(root)
+                except OSError:
+                    pass
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, mm) { mm.def("fused", &fused); }
-"""
+    for stem in names:
+        for root in roots:
+            pat = os.path.join(root, stem) if root else stem
+            for cand in ([pat] if not any(c in stem for c in "*?") else sorted(glob.glob(pat))):
+                try:
+                    return ctypes.CDLL(cand), cand
+                except OSError:
+                    continue
+    return None, None
+
+
+def _arch():
+    try:
+        import torch
+        return torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+    except Exception:
+        return "gfx1151"
+
+
+def _compile(verbose=False):
+    """hiprtc: source string in, device code object out. No host compiler."""
+    rtc, rtc_path = _load(["hiprtc*.dll", "libhiprtc.so*", "amdhip64*.dll"])
+    if rtc is None:
+        return None, "hiprtc library not found"
+    if verbose:
+        print(f"[zilver] hiprtc: {rtc_path}")
+
+    # hiprtc supplies the HIP headers implicitly; including hip_runtime.h
+    # confuses it, so drop that line and nothing else.
+    src = "\n".join(l for l in _SRC.read_text().splitlines()
+                    if "#include <hip/hip_runtime.h>" not in l)
+
+    rtc.hiprtcCreateProgram.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p,
+                                        ctypes.c_char_p, ctypes.c_int,
+                                        ctypes.c_void_p, ctypes.c_void_p]
+    rtc.hiprtcCompileProgram.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                         ctypes.POINTER(ctypes.c_char_p)]
+    rtc.hiprtcGetCodeSize.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+    rtc.hiprtcGetCode.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    rtc.hiprtcGetProgramLogSize.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+    rtc.hiprtcGetProgramLog.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+    prog = ctypes.c_void_p()
+    rc = rtc.hiprtcCreateProgram(ctypes.byref(prog), src.encode(),
+                                 b"fused_gate.hip", 0, None, None)
+    if rc != 0:
+        return None, f"hiprtcCreateProgram -> {rc}"
+
+    opts = [f"--offload-arch={_arch()}".encode(), b"-O3"]
+    arr = (ctypes.c_char_p * len(opts))(*opts)
+    rc = rtc.hiprtcCompileProgram(prog, len(opts), arr)
+    if rc != 0 or verbose:
+        n = ctypes.c_size_t()
+        rtc.hiprtcGetProgramLogSize(prog, ctypes.byref(n))
+        if n.value > 1:
+            buf = ctypes.create_string_buffer(n.value)
+            rtc.hiprtcGetProgramLog(prog, buf)
+            log = buf.value.decode(errors="replace").strip()
+            if log:
+                print("[zilver] hiprtc log:\n" + log)
+    if rc != 0:
+        return None, f"hiprtcCompileProgram -> {rc} (see log above)"
+
+    n = ctypes.c_size_t()
+    rtc.hiprtcGetCodeSize(prog, ctypes.byref(n))
+    code = ctypes.create_string_buffer(n.value)
+    rtc.hiprtcGetCode(prog, code)
+    return code, None
 
 
 def available() -> bool:
-    """Is this a ROCm torch with a visible device? MPS and CUDA both say no."""
     try:
         import torch
         return bool(torch.version.hip) and torch.cuda.is_available()
@@ -57,27 +131,70 @@ def available() -> bool:
         return False
 
 
-def kernel():
-    """The compiled module, or None. Built once; torch caches it on disk."""
-    global _MOD, _TRIED
+def kernel(verbose=None):
+    """A callable (state, masks, pivots, rows, U, m) -> None, or None."""
+    global _K, _TRIED
     if _TRIED:
-        return _MOD
+        return _K
     _TRIED = True
+    verbose = bool(os.environ.get("ZILVER_BUILD_VERBOSE")) if verbose is None else verbose
     if not available():
         return None
-    try:
-        from torch.utils.cpp_extension import load_inline
-        _MOD = load_inline(
-            name="zilver_fused",
-            cpp_sources=[_SHIM],
-            cuda_sources=[_SRC.read_text()],
-            functions=["fused"],
-            with_cuda=True,
-            extra_cuda_cflags=["-O3"],
-            verbose=bool(os.environ.get("ZILVER_BUILD_VERBOSE")),
-        )
-    except Exception as exc:                     # no compiler is an answer, not a crash
-        _MOD = None
-        if os.environ.get("ZILVER_BUILD_VERBOSE"):
-            print(f"[zilver] HIP extension unavailable: {type(exc).__name__}: {exc}")
-    return _MOD
+
+    code, err = _compile(verbose)
+    if code is None:
+        print(f"[zilver] hiprtc unavailable: {err}")
+        return None
+
+    hip, hip_path = _load(["amdhip64*.dll", "libamdhip64.so*"])
+    if hip is None:
+        print("[zilver] HIP runtime not found")
+        return None
+    if verbose:
+        print(f"[zilver] hip runtime: {hip_path}")
+
+    import torch
+    torch.zeros(1, device="cuda")          # force context creation before we use it
+
+    hip.hipModuleLoadData.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+    hip.hipModuleGetFunction.argtypes = [ctypes.POINTER(ctypes.c_void_p),
+                                         ctypes.c_void_p, ctypes.c_char_p]
+    mod = ctypes.c_void_p()
+    rc = hip.hipModuleLoadData(ctypes.byref(mod), code)
+    if rc != 0:
+        print(f"[zilver] hipModuleLoadData -> {rc}")
+        return None
+    fn = ctypes.c_void_p()
+    rc = hip.hipModuleGetFunction(ctypes.byref(fn), mod, b"fused_apply")
+    if rc != 0:
+        print(f"[zilver] hipModuleGetFunction -> {rc}")
+        return None
+
+    hip.hipModuleLaunchKernel.restype = ctypes.c_int
+    hip.hipModuleLaunchKernel.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+        ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
+    ]
+
+    def launch(state, masks, pivots, rows, U, m):
+        n_cosets = state.numel() >> m
+        threads = 256
+        blocks = (n_cosets + threads - 1) // threads
+        vals = [ctypes.c_void_p(state.data_ptr()),
+                ctypes.c_void_p(masks.data_ptr()),
+                ctypes.c_void_p(pivots.data_ptr()),
+                ctypes.c_void_p(rows.data_ptr()),
+                ctypes.c_void_p(U.data_ptr()),
+                ctypes.c_int(int(m)),
+                ctypes.c_ulonglong(int(n_cosets))]
+        params = (ctypes.c_void_p * len(vals))(
+            *[ctypes.cast(ctypes.byref(v), ctypes.c_void_p) for v in vals])
+        stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
+        rc = hip.hipModuleLaunchKernel(fn, blocks, 1, 1, threads, 1, 1, 0,
+                                       stream, params, None)
+        if rc != 0:
+            raise RuntimeError(f"hipModuleLaunchKernel -> {rc}")
+
+    _K = launch
+    return _K
