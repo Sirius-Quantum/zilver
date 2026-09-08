@@ -128,19 +128,28 @@ gb = 2 * N * 8 / 1e9
 print(f"  reference copy {ref*1e3:8.2f} ms = {gb/ref:6.1f} GB/s  == 1.00 copies")
 # Sweep POSITION, because it is the variable everything turns on and the first
 # run compared our worst position against torch's best. copies_per_gate.py
-# indexes by zilver's q, where stride = 1 << (n-1-q), so p = n-1-q. Its measured
-# torch numbers are carried here so the rows line up.
-TORCH = {0: 4.28, 1: 4.26, 4: 4.26, 12: 4.30, 18: 6.07, 20: 5.48, 22: 6.99, 23: 7.00}
+# indexes by zilver's q, where stride = 1 << (n-1-q), so p = n-1-q.
+#
+# THESE ARE TRANSCRIBED CONSTANTS, NOT A MEASUREMENT MADE HERE, and the column header says so.
+# The previous values (4.28 4.26 4.26 4.30 6.07 5.48 6.99 7.00) came from a run before
+# 2026-09-08 and disagreed with copies_per_gate.py's own output in the same harvest
+# (4.38 4.36 4.38 4.41 6.29 5.64 7.16 7.17). A reader who opens both files finds the
+# contradiction in a minute, and a white paper that calls this column a co-measurement is
+# then wrong on its face. Updated to the 2026-09-08 harvest and RENAMED so nothing implies
+# these were timed alongside the kernel column above them.
+#
+# The honest fix is to time torch here. Until that happens the header is the disclosure.
+REF_XFORM = {0: 4.38, 1: 4.36, 4: 4.38, 12: 4.41, 18: 6.29, 20: 5.64, 22: 7.16, 23: 7.17}
 
 print(f"\n  m=1, one gate, by position ({'p':>2} = bit of the flat index)")
-print(f"  {'p':>3}{'q':>4}{'stride':>12}{'ms':>9}{'copies':>9}{'torch@q':>9}{'gain':>7}")
+print(f"  {'p':>3}{'q':>4}{'stride':>12}{'ms':>9}{'copies':>9}{'ref@q*':>9}{'gain':>7}")
 for q in (0, 1, 4, 12, 18, 20, 22, 23):
     p_ = n - 1 - q
     s_ = torch.randn(N, dtype=torch.complex64, device=dev)
     U = kron_logical([H2])
     dt = timeit(lambda: run_fused(s_, n, [p_], U))
     cp = dt / ref
-    t = TORCH[q]
+    t = REF_XFORM[q]
     print(f"  {p_:>3}{q:>4}{1 << p_:>12}{dt*1e3:>9.2f}{cp:>9.2f}{t:>9.2f}{t/cp:>6.1f}x")
 
 print(f"\n  fusion: which POSITIONS are fused decides coalescing, not how many")
@@ -171,6 +180,10 @@ print("""
   m=1 came back 1.29-1.34 -- OUTSIDE the predicted band, by 27%. Recorded, not buried.
   Pre-registered for the m-sweep: m=3 single-pass at 1.25-1.45 copies/pass; m=5 and m=6
   monotone increasing above m=4's 2.73.
+
+  * ref@q is TRANSCRIBED from bench/copies_per_gate.py's 2026-09-08 run, not timed here.
+    Its reference copy was 1.26 ms against this bench's 1.30 ms -- 3% apart, which bounds
+    any comparison drawn across the two columns.
 
   Read the FUSION table by which positions are fused, not by m. Coalescing is
   set by the bits left FREE for the thread id, not the bits being fused: fuse
