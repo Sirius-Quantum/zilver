@@ -131,18 +131,23 @@ print(f"  reference copy {ref*1e3:8.2f} ms = {gb/ref:6.1f} GB/s  == 1.00 copies"
 # indexes by zilver's q, where stride = 1 << (n-1-q), so p = n-1-q.
 #
 # THESE ARE TRANSCRIBED CONSTANTS, NOT A MEASUREMENT MADE HERE, and the column header says so.
-# The previous values (4.28 4.26 4.26 4.30 6.07 5.48 6.99 7.00) came from a run before
-# 2026-09-08 and disagreed with copies_per_gate.py's own output in the same harvest
-# (4.38 4.36 4.38 4.41 6.29 5.64 7.16 7.17). A reader who opens both files finds the
-# contradiction in a minute, and a white paper that calls this column a co-measurement is
-# then wrong on its face. Updated to the 2026-09-08 harvest and RENAMED so nothing implies
-# these were timed alongside the kernel column above them.
+# They are copies_per_gate.py's output from THE SAME DAY, carried here so the rows line up --
+# 2026-09-07 measured 4.28 4.26 4.26 4.30 6.07 5.48 6.99 7.00 and those were the values here.
 #
-# The honest fix is to time torch here. Until that happens the header is the disclosure.
+# The hazard is not that they are wrong; it is that they go stale silently. Re-running
+# copies_per_gate.py on 2026-09-08 gave 4.38 4.36 4.38 4.41 6.29 5.64 7.16 7.17, and this dict
+# went on printing the 09-07 figures beside 09-08 kernel timings, so the same harvest contained
+# two different reference columns and a paper drawing on both was wrong on its face.
+#
+# Updated to 2026-09-08 to match the kernel numbers printed above it. RENAMED so nothing implies
+# these were timed alongside that column, and DATED so the next mismatch is visible rather than
+# silent. The real fix is to time the reference path in this bench.
+REF_XFORM_DATE = "2026-09-08"
 REF_XFORM = {0: 4.38, 1: 4.36, 4: 4.38, 12: 4.41, 18: 6.29, 20: 5.64, 22: 7.16, 23: 7.17}
 
 print(f"\n  m=1, one gate, by position ({'p':>2} = bit of the flat index)")
 print(f"  {'p':>3}{'q':>4}{'stride':>12}{'ms':>9}{'copies':>9}{'ref@q*':>9}{'gain':>7}")
+print(f"  * ref@q transcribed from copies_per_gate.py, {REF_XFORM_DATE}, not timed here")
 for q in (0, 1, 4, 12, 18, 20, 22, 23):
     p_ = n - 1 - q
     s_ = torch.randn(N, dtype=torch.complex64, device=dev)
