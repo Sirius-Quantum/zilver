@@ -145,8 +145,20 @@ for q in (0, 1, 4, 12, 18, 20, 22, 23):
 
 print(f"\n  fusion: which POSITIONS are fused decides coalescing, not how many")
 print(f"  {'m':>3}{'positions':>26}{'ms/pass':>10}{'copies':>9}{'per gate':>10}")
+# The m-sweep on HIGH bits. m=1 and m=2 came back single-pass (1.24-1.34 copies) and m=4 did
+# not (2.73), so the knee sits between them and m=3 was the one row missing. Pre-registered
+# before this ran: m=3 stays single-pass at 1.25-1.45 copies/pass, and m=5, m=6 are monotone
+# increasing above m=4's 2.73.
+#   Falsified if m=3 comes back near 2.7 -- the knee is then at 2, this fuses PAIRS rather than
+#   cosets, and the fusion claim must be restated as m=2 only (still true, still 0.62/gate).
+#   Falsified also if m=5 or m=6 lands BELOW m=4, which would make 2.73 a compiler artifact
+#   rather than occupancy, and the traffic model wrong.
+# Low-bit rows stay in for contrast: they are the coalescing control, not the sweep.
 for m, pos in ((2, [0, 1]), (2, [22, 23]),
-               (4, [0, 1, 2, 3]), (4, [20, 21, 22, 23]), (4, [0, 9, 17, 23])):
+               (3, [21, 22, 23]),
+               (4, [0, 1, 2, 3]), (4, [20, 21, 22, 23]), (4, [0, 9, 17, 23]),
+               (5, [19, 20, 21, 22, 23]),
+               (6, [18, 19, 20, 21, 22, 23])):
     s_ = torch.randn(N, dtype=torch.complex64, device=dev)
     U = kron_logical([H2] * m)
     dt = timeit(lambda: run_fused(s_, n, pos, U))
@@ -156,6 +168,9 @@ for m, pos in ((2, [0, 1]), (2, [22, 23]),
 print("""
   Pre-registered before any of this existed: 0.95-1.20 copies at m=1, and below
   2.5x over the torch path kills the traffic model.
+  m=1 came back 1.29-1.34 -- OUTSIDE the predicted band, by 27%. Recorded, not buried.
+  Pre-registered for the m-sweep: m=3 single-pass at 1.25-1.45 copies/pass; m=5 and m=6
+  monotone increasing above m=4's 2.73.
 
   Read the FUSION table by which positions are fused, not by m. Coalescing is
   set by the bits left FREE for the thread id, not the bits being fused: fuse

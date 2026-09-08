@@ -25,6 +25,7 @@ case "${1:-}" in
   --hip)    WHAT=bench/hip_bench.py ;;         # COMPILE the kernel, prove it, price it
   --mem)    WHAT=bench/mem_ceiling.py ;;       # how much of the 117 GB can the GPU really have
   --shape)  WHAT=bench/mem_shape.py ;;         # is that ceiling per-allocation or total?
+  --cold33) WHAT=bench/cold33.py ;;            # 33 qubits, allocated FIRST in a cold process
   "")       ;;
   *) echo "unknown flag: $1  (--copies | --check | --hip | --mem | --shape)"; exit 2 ;;
 esac
@@ -62,6 +63,13 @@ cp "$REPO/bench/coset_toy.py" "$DEST/bench/coset_toy.py"
 cp "$REPO/bench/hip_bench.py" "$DEST/bench/hip_bench.py"
 cp "$REPO/bench/mem_ceiling.py" "$DEST/bench/mem_ceiling.py"
 cp "$REPO/bench/mem_shape.py" "$DEST/bench/mem_shape.py"
+# EVERY bench a flag can select must be in this list. It is a fixed list, not a glob, so a bench
+# that is missing here does not fail loudly on the Windows side -- python reports "No such file
+# or directory" and the flag simply never runs. That is exactly what happened to --check on
+# 2026-09-08: fused_check.py had a flag and no copy line, so the correctness run produced an
+# empty file and nobody noticed until the harvest was read.
+cp "$REPO/bench/fused_check.py" "$DEST/bench/fused_check.py"
+cp "$REPO/bench/cold33.py" "$DEST/bench/cold33.py"
 find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
 echo "   $(find "$DEST" -name '*.py' | wc -l) files"
 
