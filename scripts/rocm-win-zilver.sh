@@ -26,8 +26,11 @@ case "${1:-}" in
   --mem)    WHAT=bench/mem_ceiling.py ;;       # how much of the 117 GB can the GPU really have
   --shape)  WHAT=bench/mem_shape.py ;;         # is that ceiling per-allocation or total?
   --cold33) WHAT=bench/cold33.py ;;            # 33 qubits, allocated FIRST in a cold process
+  --qft)    WHAT=bench/report_qft.py ;;        # M1+M4: QFT closed form at every width, and a planted fault
+  --random) WHAT=bench/report_random.py ;;     # M2: random circuit, written out for bench/report_aer.py
+  --timing) WHAT=bench/report_timing.py ;;     # M3: copies/gate at the top width; where gpu.py's time goes
   "")       ;;
-  *) echo "unknown flag: $1  (--copies | --check | --hip | --mem | --shape)"; exit 2 ;;
+  *) echo "unknown flag: $1  (--copies | --check | --hip | --mem | --shape | --cold33 | --qft | --random | --timing)"; exit 2 ;;
 esac
 
 FROM=${FROM:-20}
@@ -58,19 +61,14 @@ echo "-- copying source -> $ROOT_W\\zilver"
 rm -rf "$DEST"; mkdir -p "$DEST/scripts" "$DEST/bench"
 cp -r "$REPO/src" "$DEST/src"
 cp "$REPO/scripts/gpu.py" "$DEST/scripts/gpu.py"
-cp "$REPO/bench/copies_per_gate.py" "$DEST/bench/copies_per_gate.py"
-cp "$REPO/bench/coset_toy.py" "$DEST/bench/coset_toy.py"
-cp "$REPO/bench/hip_bench.py" "$DEST/bench/hip_bench.py"
-cp "$REPO/bench/mem_ceiling.py" "$DEST/bench/mem_ceiling.py"
-cp "$REPO/bench/mem_shape.py" "$DEST/bench/mem_shape.py"
-# EVERY bench a flag can select must be in this list. It is a fixed list, not a glob, so a bench
-# that is missing here does not fail loudly on the Windows side -- python reports "No such file
-# or directory" and the flag simply never runs. That is exactly what happened to --check on
-# 2026-09-08: fused_check.py had a flag and no copy line, so the correctness run produced an
-# empty file and nobody noticed until the harvest was read.
-cp "$REPO/bench/fused_check.py" "$DEST/bench/fused_check.py"
-cp "$REPO/bench/cold33.py" "$DEST/bench/cold33.py"
+# The WHOLE bench directory, by glob. It used to be a fixed list, and a bench missing from it did
+# not fail loudly on the Windows side -- python said "No such file or directory" and the flag
+# simply never ran. That is what happened to --check on 2026-09-08: fused_check.py had a flag
+# and no copy line, so the correctness run produced an empty file nobody noticed until the
+# harvest was read. A glob cannot forget a file; the check below catches a flag with no file.
+cp "$REPO"/bench/*.py "$DEST/bench/"
 find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
+[ -f "$DEST/$WHAT" ] || { echo "STOP: $WHAT did not arrive in $DEST"; exit 1; }
 echo "   $(find "$DEST" -name '*.py' | wc -l) files"
 
 cat > "$ROOT/runzilver.ps1" <<'PS1'
