@@ -1,6 +1,6 @@
 # Zilver
 
-[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](https://github.com/Sirius-Quantum/zilver/releases/tag/v0.6.1)
+[![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](https://pypi.org/project/zilver/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![MLX](https://img.shields.io/badge/MLX-0.18%2B-orange.svg)](https://github.com/ml-explore/mlx)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
@@ -19,11 +19,11 @@ pip install zilver
 
 Apple Silicon Mac, macOS 13 or later, Python 3.10 or later.
 
-On an AMD GPU (Windows 11, with PyTorch for ROCm installed), run it standalone from the repository:
+On an AMD GPU (Windows 11, with PyTorch for ROCm installed), run it standalone:
 
 ```
-git clone --branch v0.6.1 https://github.com/Sirius-Quantum/zilver
-python zilver\scripts\gpu.py
+pip install zilver
+python -m zilver.gpu
 ```
 
 New to Zilver? The [Quickstart](QUICKSTART.md) goes from install to a trained circuit in a few minutes.
