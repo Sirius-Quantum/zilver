@@ -162,6 +162,10 @@ class Hip:
     def copy_(self, dst, src):
         dst.copy_(src)
 
+    def stream_(self, s):
+        """One read and one write of every amplitude, in place: the gate's own footprint."""
+        self.torch.view_as_real(s).neg_()
+
     def empty_like(self, s):
         return self.torch.empty_like(s)
 
@@ -234,6 +238,9 @@ class Numpy:
 
     def copy_(self, dst, src):
         dst[:] = src
+
+    def stream_(self, s):
+        np.negative(s, out=s)
 
     def empty_like(self, s):
         return np.empty_like(s)
