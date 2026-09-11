@@ -1,14 +1,15 @@
 # Zilver
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://pypi.org/project/zilver/)
+[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](https://github.com/Sirius-Quantum/zilver/releases/tag/v0.6.1)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![MLX](https://img.shields.io/badge/MLX-0.18%2B-orange.svg)](https://github.com/ml-explore/mlx)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1--M4-black.svg)](https://www.apple.com/mac/)
+[![AMD ROCm](https://img.shields.io/badge/AMD%20ROCm-gfx1151-red.svg)](https://rocm.docs.amd.com/)
 
-Zilver is a quantum circuit simulator built natively for Apple Silicon. It runs entirely on the Apple GPU through [MLX](https://github.com/ml-explore/mlx), with hand-written Metal compute kernels for the universal gates.
+Zilver is a distributed quantum simulation network. On Apple silicon it runs on the GPU through [MLX](https://github.com/ml-explore/mlx), with hand-written Metal compute kernels for the universal gates, and Macs join the network as nodes. On AMD GPUs it runs standalone through a fused HIP kernel, reaching 32 qubits on a Radeon 8060S, and it also runs standalone on x86 CPUs.
 
-It is designed for QML researchers and engineers who want to develop, train, and benchmark variational quantum algorithms locally on their own Mac. No cloud dependency. No virtualisation. No platform cost.
+It is designed for QML researchers and engineers who want to develop, train, and benchmark variational quantum algorithms locally on their own machine. No cloud dependency. No virtualisation. No platform cost.
 
 ## Install and run
 
@@ -17,6 +18,13 @@ pip install zilver
 ```
 
 Apple Silicon Mac, macOS 13 or later, Python 3.10 or later.
+
+On an AMD GPU (Windows 11, with PyTorch for ROCm installed), run it standalone from the repository:
+
+```
+git clone --branch v0.6.1 https://github.com/Sirius-Quantum/zilver
+python zilver\scripts\gpu.py
+```
 
 New to Zilver? The [Quickstart](QUICKSTART.md) goes from install to a trained circuit in a few minutes.
 
