@@ -1,6 +1,6 @@
 """Run the simulator on the GPU. Nothing else.
 
-    python3 scripts/gpu.py            # 20 -> 28 qubits
+    python3 scripts/gpu.py            # 20 -> 32 qubits, stops early where memory runs out
     FROM=24 TO=30 python3 scripts/gpu.py
 
 Prints the device it got, then one line per width: seconds and the state norm.
@@ -15,7 +15,9 @@ import numpy as np
 # fatal signal, which is the only way to see WHERE from outside the box.
 faulthandler.enable()
 
-sys.path.insert(0, "src")
+# Relative to this file, not the working directory, so it runs from anywhere:
+#   git clone https://github.com/Sirius-Quantum/zilver && python zilver/scripts/gpu.py
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 os.environ.setdefault("ZILVER_BACKEND", "torch")
 
 import zilver._array as _a
@@ -39,7 +41,7 @@ print(f"\n  device      : {getattr(_a, 'TORCH_DEVICE', 'cpu')}")
 print(f"  complex64   : {_a.HAS_COMPLEX}")
 print(f"\n{'qubits':>7}{'state GB':>10}{'seconds':>10}{'norm':>12}")
 
-for n in range(int(os.environ.get("FROM", "20")), int(os.environ.get("TO", "28")) + 1):
+for n in range(int(os.environ.get("FROM", "20")), int(os.environ.get("TO", "32")) + 1):
     gb = (2 ** n) * 8 / 1e9
     c = Circuit(n); pi = 0
     for q in range(n):
