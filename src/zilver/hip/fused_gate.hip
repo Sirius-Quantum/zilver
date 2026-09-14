@@ -86,8 +86,13 @@ extern "C" __global__ void fused_apply(
         for (int k = 0; k < D; ++k) amp[k] = tmp[k];
     }
 
-    // Apply, in registers. This is the arithmetic that is free on a
-    // bandwidth-bound problem: m stages for the price of one pass.
+    // Apply. The arithmetic is free on a bandwidth-bound problem: m stages for
+    // the price of one pass -- PROVIDED these arrays are in registers, which is
+    // true only when M is a compile-time constant. Built with a runtime m the
+    // trip counts do not unroll, idx/amp/tmp/out spill to scratch (measured:
+    // 800 B a thread on 7 registers), and the spill traffic scales as 2^m --
+    // which is precisely the cost fusing is supposed to avoid. hip_ext.py
+    // specialises M per width before hiprtc sees this file; see _specialise.
     float2 out[1 << MAXM];
     for (int r = 0; r < D; ++r) {
         float re = 0.0f, im = 0.0f;
