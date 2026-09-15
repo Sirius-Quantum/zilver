@@ -259,9 +259,19 @@ class Circuit:
         # qubits commute, so a run of them becomes one unitary in one pass. Without this the
         # simulator pays a pass per gate: 95 for the 95-gate circuit, where four to a pass is 24.
         # The budget is QUBITS, not gates: a pass touches m qubits, so four one-qubit gates,
-        # two CNOTs, or a CNOT plus two one-qubit gates all cost the same single pass. That
-        # matters because the ladder is the expensive part -- 31 CNOTs against 32 merged
-        # one-qubit gates -- and pairing disjoint CNOTs halves it.
+        # two CNOTs, or a CNOT plus two one-qubit gates all cost the same single pass.
+        #
+        # IT DOES NOTHING FOR A CNOT LADDER, and that is not a bug. The published circuit ends
+        # (0,1), (1,2), (2,3), ... where every CNOT shares a qubit with the next, so no two
+        # CONSECUTIVE ones are ever disjoint. Pairing (0,1) with (2,3) would mean reordering
+        # past (1,2), which does not commute with either. Counted at 32 qubits: 95 gates -> 63
+        # after merge -> 39 passes, whether or not two-qubit gates may share a pass. The ladder
+        # costs 31 of those 39 and a window cannot help it.
+        #
+        # Where this DOES fire: brickwork layers, QAOA mixers, anything with disjoint two-qubit
+        # gates side by side. The ladder needs the GF(2) frame instead, which absorbs CNOTs as
+        # an index relabel -- and by its own docstring wins only with depth, of which the
+        # published circuit has one layer.
         i = 0
         while i < len(plan):
             j, seen = i, set()
