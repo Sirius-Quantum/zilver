@@ -258,16 +258,20 @@ class Circuit:
         # thing to minimise is PASSES, not gates. Consecutive one-qubit gates on distinct
         # qubits commute, so a run of them becomes one unitary in one pass. Without this the
         # simulator pays a pass per gate: 95 for the 95-gate circuit, where four to a pass is 24.
+        # The budget is QUBITS, not gates: a pass touches m qubits, so four one-qubit gates,
+        # two CNOTs, or a CNOT plus two one-qubit gates all cost the same single pass. That
+        # matters because the ladder is the expensive part -- 31 CNOTs against 32 merged
+        # one-qubit gates -- and pairing disjoint CNOTs halves it.
         i = 0
         while i < len(plan):
             j, seen = i, set()
-            while (j < len(plan) and len(plan[j][1]) == 1
-                   and plan[j][1][0] not in seen and (j - i) < _FUSE_MAX):
-                seen.add(plan[j][1][0])
+            while j < len(plan):
+                qs = plan[j][1]
+                if len(seen) + len(qs) > _FUSE_MAX or any(q in seen for q in qs):
+                    break
+                seen.update(qs)
                 j += 1
-            if j - i >= 2 and _hip_apply_fused(
-                    state, [g for g, _ in plan[i:j]],
-                    [q[0] for _, q in plan[i:j]], self.n_qubits):
+            if j - i >= 2 and _hip_apply_fused(state, plan[i:j], self.n_qubits):
                 i = j                        # the kernel wrote through the state in place
                 continue
             gate, qubits = plan[i]

@@ -383,23 +383,30 @@ def _hip_apply(state, gate, qubits, n):
 _FUSE_MAX = int(os.environ.get("ZILVER_FUSE", "4"))
 
 
-def _hip_apply_fused(state, mats, qubits, n):
-    """Apply several ONE-QUBIT gates on distinct qubits in a single pass. True if it did.
+def _hip_apply_fused(state, gates, n):
+    """Apply several gates on pairwise-disjoint qubits in a single pass. True if it did.
 
-    Gates on disjoint qubits commute, so a run of them combines into one 2^m x 2^m unitary and
-    costs one pass over the state instead of m. The traffic is a pass either way; today we pay
-    it m times.
+    `gates` is [(matrix, [qubits]), ...] of any arity -- one- and two-qubit gates mix freely.
+    Gates on disjoint qubits commute, so a run of them combines into one 2^m x 2^m unitary over
+    m = total qubits, and costs ONE pass over the state instead of one per gate. The traffic is
+    a pass either way; without this we pay it per gate.
 
-    THE ORDERING IS A TRAP. zilver puts qubits[0] in the HIGH bit; a kron built left to right
-    puts the first matrix in the LOW bit. So the list must be REVERSED before the kron. Checked
-    against one-gate-at-a-time in numpy at m=2,3,4: reversed matches to 3e-17, qubit-order is
-    wrong by 0.12 -- and is perfectly normalised while being wrong. fused.py records the same
-    trap from four frame orderings. Never check this path with a norm.
+    The budget is QUBITS, not gates: at m=4 that is four one-qubit gates, or two CNOTs, or a
+    CNOT and two one-qubit gates. On the published circuit the ladder is the expensive part --
+    31 CNOTs, and pairing them halves that.
+
+    THE ORDERING IS A TRAP. zilver puts qubits[0] in the HIGH bit; np.kron(A, B) also puts A in
+    the high bits, so building over the REVERSED gate list gives the bit order the kernel wants,
+    with each gate contributing its own block. Checked against one-gate-at-a-time in numpy:
+    reversed matches to 3e-17, the other order is wrong by 0.12 -- and is perfectly normalised
+    while being wrong. fused.py records the same trap from four frame orderings. Never check
+    this path with a norm.
     """
     if _HIP_OFF:
         return False
+    qubits = [q for _, qs in gates for q in qs]
     m = len(qubits)
-    if m < 2 or m > _FUSE_MAX or n <= m or len(set(qubits)) != m:
+    if len(gates) < 2 or m < 2 or m > _FUSE_MAX or n <= m or len(set(qubits)) != m:
         return False
     from . import hip_ext
     launch = hip_ext.kernel()
@@ -418,9 +425,10 @@ def _hip_apply_fused(state, mats, qubits, n):
         return False
 
     U = np.eye(1, dtype=np.complex64)
-    for g in reversed(mats):                 # REVERSED: see the docstring
+    for g, qs in reversed(gates):            # REVERSED: see the docstring
         g = g.detach().cpu().numpy() if hasattr(g, "detach") else np.asarray(g)
-        U = np.kron(np.asarray(g, dtype=np.complex64).reshape(2, 2), U)
+        d = 1 << len(qs)
+        U = np.kron(np.asarray(g, dtype=np.complex64).reshape(d, d), U)
 
     gate_bit = [m - 1 - i for i in range(m)]
     perm = np.empty(1 << m, dtype=np.int64)
