@@ -376,6 +376,72 @@ def _hip_apply(state, gate, qubits, n):
     return True
 
 
+# One-qubit gates per pass. Measured on gfx1151 at 32 qubits, copies of the state per pass and
+# the resulting cost per gate:  m=1 0.98/0.98   m=2 1.02/0.51   m=3 1.11/0.37   m=4 1.32/0.33
+# m=5 1.82/0.36. m=4 is cheapest per gate; m=3 is the widest that keeps full occupancy (70
+# registers, 16 waves a SIMD, against 119/12 at m=4 and 192/8 at m=5).
+_FUSE_MAX = int(os.environ.get("ZILVER_FUSE", "4"))
+
+
+def _hip_apply_fused(state, mats, qubits, n):
+    """Apply several ONE-QUBIT gates on distinct qubits in a single pass. True if it did.
+
+    Gates on disjoint qubits commute, so a run of them combines into one 2^m x 2^m unitary and
+    costs one pass over the state instead of m. The traffic is a pass either way; today we pay
+    it m times.
+
+    THE ORDERING IS A TRAP. zilver puts qubits[0] in the HIGH bit; a kron built left to right
+    puts the first matrix in the LOW bit. So the list must be REVERSED before the kron. Checked
+    against one-gate-at-a-time in numpy at m=2,3,4: reversed matches to 3e-17, qubit-order is
+    wrong by 0.12 -- and is perfectly normalised while being wrong. fused.py records the same
+    trap from four frame orderings. Never check this path with a norm.
+    """
+    if _HIP_OFF:
+        return False
+    m = len(qubits)
+    if m < 2 or m > _FUSE_MAX or n <= m or len(set(qubits)) != m:
+        return False
+    from . import hip_ext
+    launch = hip_ext.kernel()
+    if launch is None:
+        return False
+    import torch
+    if not isinstance(state, torch.Tensor):
+        return False
+    if not (state.is_cuda and state.is_contiguous() and state.dtype == torch.complex64):
+        return False
+
+    from .fused import pivots_for
+    try:
+        piv, masks, order = pivots_for([1 << (n - 1 - q) for q in qubits])
+    except ValueError:                       # dependent masks: cannot share a pass
+        return False
+
+    U = np.eye(1, dtype=np.complex64)
+    for g in reversed(mats):                 # REVERSED: see the docstring
+        g = g.detach().cpu().numpy() if hasattr(g, "detach") else np.asarray(g)
+        U = np.kron(np.asarray(g, dtype=np.complex64).reshape(2, 2), U)
+
+    gate_bit = [m - 1 - i for i in range(m)]
+    perm = np.empty(1 << m, dtype=np.int64)
+    for loc in range(1 << m):
+        gi = 0
+        for b in range(m):
+            if (loc >> b) & 1:
+                gi |= 1 << gate_bit[order[b]]
+        perm[loc] = gi
+    U = np.ascontiguousarray(U[np.ix_(perm, perm)])
+
+    dev = state.device
+    launch(state,
+           torch.tensor(masks, dtype=torch.int64, device=dev),
+           torch.tensor(piv, dtype=torch.int32, device=dev),
+           torch.zeros(m, dtype=torch.int64, device=dev),   # no deferred frame yet
+           torch.as_tensor(U, dtype=torch.complex64, device=dev),
+           m)
+    return True
+
+
 def apply_gate(
     state: mx.array,
     gate: mx.array,

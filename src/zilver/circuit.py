@@ -6,7 +6,8 @@ from typing import Callable, Sequence
 from ._array import mx, HAS_COMPLEX
 import numpy as np
 
-from .simulator import apply_gate, _apply_gate_real, expectation_pauli_sum, StateVector
+from .simulator import (apply_gate, _apply_gate_real, _hip_apply_fused, _FUSE_MAX,
+                        expectation_pauli_sum, StateVector)
 from . import gates as G
 
 
@@ -228,13 +229,36 @@ class Circuit:
         init[0] = 1.0
         state = mx.array(init)
 
+        # Build the gates first so the scheduler sees a WINDOW of them, not one at a time.
+        # Gates are 2x2 or 4x4; making them all costs nothing beside one pass over the state.
+        plan = []
         for op in self._ops:
             if op.param_indices:
                 gate_params = params[mx.array(op.param_indices)]
                 gate = op.gate_fn(gate_params)
             else:
                 gate = op.gate_fn(None)
-            state = apply_gate(state, gate, op.qubits, self.n_qubits)
+            plan.append((gate, list(op.qubits)))
+
+        # PEEPHOLE FUSION. A gate costs one pass over the whole state whatever it is, so the
+        # thing to minimise is PASSES, not gates. Consecutive one-qubit gates on distinct
+        # qubits commute, so a run of them becomes one unitary in one pass. Without this the
+        # simulator pays a pass per gate: 95 for the 95-gate circuit, where four to a pass is 24.
+        i = 0
+        while i < len(plan):
+            j, seen = i, set()
+            while (j < len(plan) and len(plan[j][1]) == 1
+                   and plan[j][1][0] not in seen and (j - i) < _FUSE_MAX):
+                seen.add(plan[j][1][0])
+                j += 1
+            if j - i >= 2 and _hip_apply_fused(
+                    state, [g for g, _ in plan[i:j]],
+                    [q[0] for _, q in plan[i:j]], self.n_qubits):
+                i = j                        # the kernel wrote through the state in place
+                continue
+            gate, qubits = plan[i]
+            state = apply_gate(state, gate, qubits, self.n_qubits)
+            i += 1
 
         return state
 
