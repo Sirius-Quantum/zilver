@@ -6,7 +6,8 @@ from typing import Callable, Sequence
 from ._array import mx, HAS_COMPLEX
 import numpy as np
 
-from .simulator import apply_gate, _apply_gate_real, expectation_pauli_sum, StateVector
+from .simulator import (apply_gate, _apply_gate_real, _hip_apply_fused, _FUSE_MAX,
+                        expectation_pauli_sum, StateVector)
 from . import gates as G
 
 
@@ -228,13 +229,64 @@ class Circuit:
         init[0] = 1.0
         state = mx.array(init)
 
+        # Build the gates first so the scheduler sees a WINDOW of them, not one at a time.
+        # Gates are 2x2 or 4x4; making them all costs nothing beside one pass over the state.
+        plan = []
         for op in self._ops:
             if op.param_indices:
                 gate_params = params[mx.array(op.param_indices)]
                 gate = op.gate_fn(gate_params)
             else:
                 gate = op.gate_fn(None)
-            state = apply_gate(state, gate, op.qubits, self.n_qubits)
+            plan.append((gate, list(op.qubits)))
+
+        # MERGE FIRST. Two gates on the SAME qubit are one matrix: applying g1 then g2 is
+        # g2 @ g1. Without this the fusion below never fires on our own benchmark circuit,
+        # which is built h(q), ry(q) for each q in turn -- consecutive PAIRS on one qubit,
+        # where the disjoint-qubit rule gives groups of size 1. Merging halves 64 one-qubit
+        # gates to 32 before a single pass is saved by fusion.
+        merged = []
+        for gate, qubits in plan:
+            if (merged and len(qubits) == 1 and len(merged[-1][1]) == 1
+                    and merged[-1][1][0] == qubits[0]):
+                merged[-1] = (gate @ merged[-1][0], merged[-1][1])   # g2 @ g1, not g1 @ g2
+            else:
+                merged.append((gate, list(qubits)))
+        plan = merged
+
+        # PEEPHOLE FUSION. A gate costs one pass over the whole state whatever it is, so the
+        # thing to minimise is PASSES, not gates. Consecutive one-qubit gates on distinct
+        # qubits commute, so a run of them becomes one unitary in one pass. Without this the
+        # simulator pays a pass per gate: 95 for the 95-gate circuit, where four to a pass is 24.
+        # The budget is QUBITS, not gates: a pass touches m qubits, so four one-qubit gates,
+        # two CNOTs, or a CNOT plus two one-qubit gates all cost the same single pass.
+        #
+        # IT DOES NOTHING FOR A CNOT LADDER, and that is not a bug. The published circuit ends
+        # (0,1), (1,2), (2,3), ... where every CNOT shares a qubit with the next, so no two
+        # CONSECUTIVE ones are ever disjoint. Pairing (0,1) with (2,3) would mean reordering
+        # past (1,2), which does not commute with either. Counted at 32 qubits: 95 gates -> 63
+        # after merge -> 39 passes, whether or not two-qubit gates may share a pass. The ladder
+        # costs 31 of those 39 and a window cannot help it.
+        #
+        # Where this DOES fire: brickwork layers, QAOA mixers, anything with disjoint two-qubit
+        # gates side by side. The ladder needs the GF(2) frame instead, which absorbs CNOTs as
+        # an index relabel -- and by its own docstring wins only with depth, of which the
+        # published circuit has one layer.
+        i = 0
+        while i < len(plan):
+            j, seen = i, set()
+            while j < len(plan):
+                qs = plan[j][1]
+                if len(seen) + len(qs) > _FUSE_MAX or any(q in seen for q in qs):
+                    break
+                seen.update(qs)
+                j += 1
+            if j - i >= 2 and _hip_apply_fused(state, plan[i:j], self.n_qubits):
+                i = j                        # the kernel wrote through the state in place
+                continue
+            gate, qubits = plan[i]
+            state = apply_gate(state, gate, qubits, self.n_qubits)
+            i += 1
 
         return state
 

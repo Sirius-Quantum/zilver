@@ -376,6 +376,80 @@ def _hip_apply(state, gate, qubits, n):
     return True
 
 
+# One-qubit gates per pass. Measured on gfx1151 at 32 qubits, copies of the state per pass and
+# the resulting cost per gate:  m=1 0.98/0.98   m=2 1.02/0.51   m=3 1.11/0.37   m=4 1.32/0.33
+# m=5 1.82/0.36. m=4 is cheapest per gate; m=3 is the widest that keeps full occupancy (70
+# registers, 16 waves a SIMD, against 119/12 at m=4 and 192/8 at m=5).
+_FUSE_MAX = int(os.environ.get("ZILVER_FUSE", "4"))
+
+
+def _hip_apply_fused(state, gates, n):
+    """Apply several gates on pairwise-disjoint qubits in a single pass. True if it did.
+
+    `gates` is [(matrix, [qubits]), ...] of any arity -- one- and two-qubit gates mix freely.
+    Gates on disjoint qubits commute, so a run of them combines into one 2^m x 2^m unitary over
+    m = total qubits, and costs ONE pass over the state instead of one per gate. The traffic is
+    a pass either way; without this we pay it per gate.
+
+    The budget is QUBITS, not gates: at m=4 that is four one-qubit gates, or two CNOTs, or a
+    CNOT and two one-qubit gates. On the published circuit the ladder is the expensive part --
+    31 CNOTs, and pairing them halves that.
+
+    THE ORDERING IS A TRAP. zilver puts qubits[0] in the HIGH bit; np.kron(A, B) also puts A in
+    the high bits, so building over the REVERSED gate list gives the bit order the kernel wants,
+    with each gate contributing its own block. Checked against one-gate-at-a-time in numpy:
+    reversed matches to 3e-17, the other order is wrong by 0.12 -- and is perfectly normalised
+    while being wrong. fused.py records the same trap from four frame orderings. Never check
+    this path with a norm.
+    """
+    if _HIP_OFF:
+        return False
+    qubits = [q for _, qs in gates for q in qs]
+    m = len(qubits)
+    if len(gates) < 2 or m < 2 or m > _FUSE_MAX or n <= m or len(set(qubits)) != m:
+        return False
+    from . import hip_ext
+    launch = hip_ext.kernel()
+    if launch is None:
+        return False
+    import torch
+    if not isinstance(state, torch.Tensor):
+        return False
+    if not (state.is_cuda and state.is_contiguous() and state.dtype == torch.complex64):
+        return False
+
+    from .fused import pivots_for
+    try:
+        piv, masks, order = pivots_for([1 << (n - 1 - q) for q in qubits])
+    except ValueError:                       # dependent masks: cannot share a pass
+        return False
+
+    U = np.eye(1, dtype=np.complex64)
+    for g, qs in reversed(gates):            # REVERSED: see the docstring
+        g = g.detach().cpu().numpy() if hasattr(g, "detach") else np.asarray(g)
+        d = 1 << len(qs)
+        U = np.kron(np.asarray(g, dtype=np.complex64).reshape(d, d), U)
+
+    gate_bit = [m - 1 - i for i in range(m)]
+    perm = np.empty(1 << m, dtype=np.int64)
+    for loc in range(1 << m):
+        gi = 0
+        for b in range(m):
+            if (loc >> b) & 1:
+                gi |= 1 << gate_bit[order[b]]
+        perm[loc] = gi
+    U = np.ascontiguousarray(U[np.ix_(perm, perm)])
+
+    dev = state.device
+    launch(state,
+           torch.tensor(masks, dtype=torch.int64, device=dev),
+           torch.tensor(piv, dtype=torch.int32, device=dev),
+           torch.zeros(m, dtype=torch.int64, device=dev),   # no deferred frame yet
+           torch.as_tensor(U, dtype=torch.complex64, device=dev),
+           m)
+    return True
+
+
 def apply_gate(
     state: mx.array,
     gate: mx.array,
