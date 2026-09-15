@@ -240,6 +240,20 @@ class Circuit:
                 gate = op.gate_fn(None)
             plan.append((gate, list(op.qubits)))
 
+        # MERGE FIRST. Two gates on the SAME qubit are one matrix: applying g1 then g2 is
+        # g2 @ g1. Without this the fusion below never fires on our own benchmark circuit,
+        # which is built h(q), ry(q) for each q in turn -- consecutive PAIRS on one qubit,
+        # where the disjoint-qubit rule gives groups of size 1. Merging halves 64 one-qubit
+        # gates to 32 before a single pass is saved by fusion.
+        merged = []
+        for gate, qubits in plan:
+            if (merged and len(qubits) == 1 and len(merged[-1][1]) == 1
+                    and merged[-1][1][0] == qubits[0]):
+                merged[-1] = (gate @ merged[-1][0], merged[-1][1])   # g2 @ g1, not g1 @ g2
+            else:
+                merged.append((gate, list(qubits)))
+        plan = merged
+
         # PEEPHOLE FUSION. A gate costs one pass over the whole state whatever it is, so the
         # thing to minimise is PASSES, not gates. Consecutive one-qubit gates on distinct
         # qubits commute, so a run of them becomes one unitary in one pass. Without this the
