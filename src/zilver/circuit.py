@@ -7,6 +7,7 @@ from ._array import mx, HAS_COMPLEX
 import numpy as np
 
 from .simulator import (apply_gate, _apply_gate_real, _hip_apply_fused, _FUSE_MAX,
+                        _SHRINK, _growth_schedule, _ungauge,
                         expectation_pauli_sum, StateVector)
 from . import gates as G
 
@@ -280,7 +281,17 @@ class Circuit:
         # A one-qubit gate on a qubit already in the span is FREE. The published circuit hides
         # that because all 64 of them come first; on a layered ansatz they fold into the CNOT
         # groups and the same rule reaches ~11 passes.
-        i = 0
+        # SHRINK TO THE SUPPORT. The state starts at |0...0>, so until the schedule has
+        # touched every qubit it is exactly (dense 2^K) tensor |0> -- and under the gauge
+        # chosen here those live amplitudes are the contiguous prefix state[:2^K]. A pass
+        # over 2^K costs 2^K, not 2^n. The first eight passes of the published circuit
+        # together cost about ONE full pass instead of eight.
+        n = self.n_qubits
+        pi = None
+        if _SHRINK:
+            plan, pi = _growth_schedule(plan, n)
+
+        i, touched = 0, set()
         while i < len(plan):
             j, seen = i, set()
             while j < len(plan):
@@ -289,13 +300,36 @@ class Circuit:
                     break
                 seen |= set(qs)
                 j += 1
-            if j - i >= 2 and _hip_apply_fused(state, plan[i:j], self.n_qubits):
+            if j == i:                       # a gate wider than the budget stands alone
+                j, seen = i + 1, set(plan[i][1])
+
+            K = n
+            if _SHRINK:
+                touched |= seen
+                K = n - min(touched)         # support is always the LAST K qubits
+
+            if K < n:
+                # Physical qubit p sits at bit position n-1-p; inside the 2^K prefix that
+                # same bit is K-qubit index p-(n-K). Getting this wrong keeps the norm at
+                # exactly 1.0 while computing a different state.
+                sub = state[:1 << K]
+                grp = [(g, [q - (n - K) for q in qs]) for g, qs in plan[i:j]]
+                if not (j - i >= 2 and _hip_apply_fused(sub, grp, K)):
+                    for g, qs in grp:
+                        sub = apply_gate(sub, g, qs, K)
+                state[:1 << K] = sub         # a no-op when the kernel wrote through it
+                i = j
+                continue
+
+            if j - i >= 2 and _hip_apply_fused(state, plan[i:j], n):
                 i = j                        # the kernel wrote through the state in place
                 continue
             gate, qubits = plan[i]
-            state = apply_gate(state, gate, qubits, self.n_qubits)
+            state = apply_gate(state, gate, qubits, n)
             i += 1
 
+        if pi is not None:
+            state = _ungauge(state, pi, n)
         return state
 
     def _run_real(self, params) -> "mx.array":
