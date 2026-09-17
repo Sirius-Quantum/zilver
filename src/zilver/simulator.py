@@ -481,9 +481,15 @@ def _growth_schedule(plan, n):
                 seen.add(q)
                 ft.append(q)
     pi = {q: n - 1 - k for k, q in enumerate(ft)}
-    for q in range(n):                       # qubits no gate touches take what is left
-        if q not in pi:
-            pi[q] = n - 1 - len(pi)
+    # UNTOUCHED QUBITS KEEP THE LOWEST FREE SLOT, IN THEIR OWN ORDER -- they must not
+    # continue the descending assignment. That bug made a GATELESS circuit come back as a
+    # full bit reversal instead of the identity, so _ungauge then tried an axis permutation
+    # of a 31-qubit tensor (rank cap 16) and a second 34.36 GB buffer at 32. The benchmark
+    # measures allocation with an empty circuit, so it hit this before any real run and
+    # both ladder directions died identically. Every test I had built circuits WITH gates.
+    free = [s for s in range(n) if s not in set(pi.values())]
+    for q, slot in zip((q for q in range(n) if q not in pi), free):
+        pi[q] = slot
     return [(plan[i][0], [pi[q] for q in plan[i][1]]) for i in order], pi
 
 
