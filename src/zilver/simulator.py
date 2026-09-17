@@ -424,6 +424,27 @@ def _hip_apply(state, gate, qubits, n):
 _FUSE_MAX = int(os.environ.get("ZILVER_FUSE", "4"))
 
 
+def _embed(g, gq, span):
+    """Lift a gate on `gq` into the space of `span`. qubits[0] is the HIGH bit, both times."""
+    m, k = len(span), len(gq)
+    pos = [span.index(q) for q in gq]
+    U = np.zeros((1 << m, 1 << m), dtype=np.complex64)
+    for i in range(1 << m):
+        gi = 0
+        for t, p in enumerate(pos):
+            if (i >> (m - 1 - p)) & 1:
+                gi |= 1 << (k - 1 - t)
+        for go in range(1 << k):
+            a = g[go, gi]
+            if a == 0:
+                continue
+            j = i
+            for t, p in enumerate(pos):
+                j = (j & ~(1 << (m - 1 - p))) | (((go >> (k - 1 - t)) & 1) << (m - 1 - p))
+            U[j, i] += a
+    return U
+
+
 def _hip_apply_fused(state, gates, n):
     """Apply several gates on pairwise-disjoint qubits in a single pass. True if it did.
 
@@ -445,9 +466,12 @@ def _hip_apply_fused(state, gates, n):
     """
     if _HIP_OFF:
         return False
-    qubits = [q for _, qs in gates for q in qs]
-    m = len(qubits)
-    if len(gates) < 2 or m < 2 or m > _FUSE_MAX or n <= m or len(set(qubits)) != m:
+    # The budget is the UNION of the qubits, so gates may OVERLAP. They need not commute: three
+    # chained CNOTs (0,1),(1,2),(2,3) span four qubits and their ordered product is one 16x16
+    # unitary, so a ladder costs a pass per three CNOTs instead of one per CNOT.
+    span = sorted({q for _, qs in gates for q in qs})
+    m = len(span)
+    if len(gates) < 2 or m < 2 or m > _FUSE_MAX or n <= m:
         return False
     from . import hip_ext
     launch = hip_ext.kernel()
@@ -461,15 +485,19 @@ def _hip_apply_fused(state, gates, n):
 
     from .fused import pivots_for
     try:
-        piv, masks, order = pivots_for([1 << (n - 1 - q) for q in qubits])
+        piv, masks, order = pivots_for([1 << (n - 1 - q) for q in span])
     except ValueError:                       # dependent masks: cannot share a pass
         return False
 
-    U = np.eye(1, dtype=np.complex64)
-    for g, qs in reversed(gates):            # REVERSED: see the docstring
+    # FORWARD, in circuit order, left-multiplied. An ordered product is not a kron: the kron
+    # form needed the list REVERSED, and using that habit here is wrong by 0.19 while leaving
+    # the norm at exactly 1.0 -- checked through fused_apply_reference at n=8. Disjoint gates
+    # are just the case where the embedded factors happen to commute, so one rule covers both.
+    U = np.eye(1 << m, dtype=np.complex64)
+    for g, qs in gates:
         g = g.detach().cpu().numpy() if hasattr(g, "detach") else np.asarray(g)
         d = 1 << len(qs)
-        U = np.kron(np.asarray(g, dtype=np.complex64).reshape(d, d), U)
+        U = _embed(np.asarray(g, dtype=np.complex64).reshape(d, d), qs, span) @ U
 
     gate_bit = [m - 1 - i for i in range(m)]
     perm = np.empty(1 << m, dtype=np.int64)

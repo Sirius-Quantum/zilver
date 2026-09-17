@@ -265,21 +265,24 @@ class Circuit:
         # (0,1), (1,2), (2,3), ... where every CNOT shares a qubit with the next, so no two
         # CONSECUTIVE ones are ever disjoint. Pairing (0,1) with (2,3) would mean reordering
         # past (1,2), which does not commute with either. Counted at 32 qubits: 95 gates -> 63
-        # after merge -> 39 passes, whether or not two-qubit gates may share a pass. The ladder
-        # costs 31 of those 39 and a window cannot help it.
+        # after merge -> 39 passes while the rule demanded DISJOINT qubits, because every CNOT
+        # in the ladder shares a qubit with the next.
         #
-        # Where this DOES fire: brickwork layers, QAOA mixers, anything with disjoint two-qubit
-        # gates side by side. The ladder needs the GF(2) frame instead, which absorbs CNOTs as
-        # an index relabel -- and by its own docstring wins only with depth, of which the
-        # published circuit has one layer.
+        # The budget is the UNION, not the count, and gates in a group need not commute -- they
+        # are multiplied in order, not permuted. Three chained CNOTs span four qubits, so the
+        # ladder costs a pass per three CNOTs: 95 gates -> 63 merged -> 19 passes.
+        #
+        # A one-qubit gate on a qubit already in the span is FREE. The published circuit hides
+        # that because all 64 of them come first; on a layered ansatz they fold into the CNOT
+        # groups and the same rule reaches ~11 passes.
         i = 0
         while i < len(plan):
             j, seen = i, set()
             while j < len(plan):
                 qs = plan[j][1]
-                if len(seen) + len(qs) > _FUSE_MAX or any(q in seen for q in qs):
+                if len(seen | set(qs)) > _FUSE_MAX:      # the UNION is the budget
                     break
-                seen.update(qs)
+                seen |= set(qs)
                 j += 1
             if j - i >= 2 and _hip_apply_fused(state, plan[i:j], self.n_qubits):
                 i = j                        # the kernel wrote through the state in place
