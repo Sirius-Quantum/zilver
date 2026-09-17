@@ -63,9 +63,14 @@ class StateVector:
         self._state_np: np.ndarray | None = None
         self._state: mx.array | None = None
         if array is None:
-            state = np.zeros(2**n_qubits, dtype=np.complex64)
+            # Build |0...0> on the device. The host form costs an allocation and a
+            # transfer the size of the whole state -- 34.36 GB at 32 qubits -- to
+            # carry one nonzero element. This constructor is off the measured path
+            # (from_array always passes an array), so it buys no benchmark time; it
+            # is the same waste as the one in Circuit._run and fixed the same way.
+            state = mx.zeros(2**n_qubits, dtype=mx.complex64)
             state[0] = 1.0
-            self._state = mx.array(state)
+            self._state = state
             return
         # On a device with no complex dtype the state arrives as a real
         # (2, 2**n) pair and must stay that way. Casting it back to complex here
