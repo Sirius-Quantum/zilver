@@ -7,6 +7,47 @@ from ._array import mx, HAS_COMPLEX, INPLACE_VIEWS
 import numpy as np
 
 
+def _to_host(t):
+    """Device tensor to host through a reused pinned buffer, instead of one bulk .cpu().
+
+    On an APU there is no device-to-host link -- device memory IS host DRAM -- so the bulk
+    path is not saturating a bus, it is staging through a pageable buffer. Measured on
+    gfx1151 over 4.29 GB:
+
+        bulk .cpu()              0.85 s     5.05 GB/s
+        chunked 64 MB + pinned   0.19 s    22.22 GB/s      4.4x
+
+    At 32 qubits that is a 6.40 s readback becoming about 1.55 s, on a run that was 30.31 s.
+    For scale, the same DRAM streams at 215.8 GB/s in place and 27.5 GB/s under one core, so
+    the bulk path was roughly 5x off what a single thread already does.
+
+    Chunk size barely matters -- 64 MB and 1024 MB both measured 22 GB/s -- so take the small
+    one and hold less pinned memory. Declines to the plain .cpu() on anything unexpected: that
+    path is correct, only slower.
+    """
+    try:
+        import torch
+    except Exception:
+        return t.cpu()
+    if not isinstance(t, torch.Tensor) or not t.is_cuda or not t.is_contiguous():
+        return t.cpu()
+    n = t.numel()
+    chunk = max(1, (64 << 20) // t.element_size())
+    if n <= chunk:
+        return t.cpu()                       # not worth a pinned buffer
+    try:
+        stage = torch.empty(chunk, dtype=t.dtype, pin_memory=True)
+    except Exception:
+        return t.cpu()                       # no pinned memory available
+    out = torch.empty(n, dtype=t.dtype, device="cpu")
+    flat = t.reshape(-1)
+    for base in range(0, n, chunk):
+        k = min(chunk, n - base)
+        stage[:k].copy_(flat[base:base + k])
+        out[base:base + k] = stage[:k]
+    return out.reshape(t.shape)
+
+
 class StateVector:
     """Wrapper around a quantum statevector.
 
@@ -110,7 +151,7 @@ class StateVector:
         if hasattr(s, "detach"):
             s = s.detach()
         if hasattr(s, "cpu"):
-            s = s.cpu()
+            s = _to_host(s)                  # chunked + pinned: 4.4x the bulk .cpu() on an APU
         shp = tuple(getattr(s, "shape", ()))
         dt = str(getattr(s, "dtype", ""))
         is_pair = (len(shp) == 2 and shp[0] == 2 and shp[1] == 2 ** self.n_qubits
