@@ -2,31 +2,58 @@
 
 [![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](https://pypi.org/project/zilver/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![MLX](https://img.shields.io/badge/MLX-0.18%2B-orange.svg)](https://github.com/ml-explore/mlx)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1--M4-black.svg)](https://www.apple.com/mac/)
-[![AMD ROCm](https://img.shields.io/badge/AMD%20ROCm-gfx1151-red.svg)](https://rocm.docs.amd.com/)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-MLX%20%2B%20Metal-black.svg)](https://github.com/ml-explore/mlx)
+[![AMD ROCm](https://img.shields.io/badge/AMD%20ROCm-fused%20HIP%20kernel-red.svg)](https://rocm.docs.amd.com/)
 
-Zilver is a distributed quantum simulation network. On Apple silicon it runs on the GPU through [MLX](https://github.com/ml-explore/mlx), with hand-written Metal compute kernels for the universal gates, and Macs join the network as nodes. On AMD GPUs it runs standalone through a fused HIP kernel, reaching 32 qubits on a Radeon 8060S, and it also runs standalone on x86 CPUs.
+Zilver is a quantum circuit simulator and a distributed simulation network built on it.
 
-It is designed for QML researchers and engineers who want to develop, train, and benchmark variational quantum algorithms locally on their own machine. No cloud dependency. No virtualisation. No platform cost.
+The simulator runs on your own machine. On Apple silicon it uses the GPU through [MLX](https://github.com/ml-explore/mlx) and hand-written Metal kernels. On AMD GPUs it uses PyTorch for ROCm and a fused HIP kernel that updates the state in place, reaching 32 qubits on a Radeon 8060S. On any other machine it runs on the CPU with NumPy.
 
-## Install and run
+The network links Apple-silicon Macs into a shared pool. A registry sends each job to a Mac that has enough memory for it, and the job runs there.
+
+It is built for people who develop, train and benchmark variational quantum algorithms. The simulator needs no account, no cloud service and no API key.
+
+## Platforms
+
+| Platform | Array backend | Fast path | Role |
+|---|---|---|---|
+| Apple silicon Mac, macOS 13+ | MLX | Metal compute kernels | Standalone, or a network node |
+| AMD GPU with PyTorch for ROCm | PyTorch | Fused in-place HIP kernel | Standalone |
+| Any x86 or ARM CPU | NumPy | Numba CPU kernels (optional) | Standalone |
+
+The AMD path is verified on Windows 11 with native ROCm on a Radeon 8060S (gfx1151). The same PyTorch layer also targets CUDA, MPS and DirectML devices, without the fused kernel. Those devices are less tested.
+
+## Install
 
 ```bash
 pip install zilver
 ```
 
-Apple Silicon Mac, macOS 13 or later, Python 3.10 or later.
+Python 3.10 or later. On Apple silicon, MLX is installed automatically. On other machines Zilver installs without MLX and falls back to NumPy.
 
-On an AMD GPU (Windows 11, with PyTorch for ROCm installed), run it standalone:
+Optional extras:
 
+```bash
+pip install "zilver[accel]"     # multithreaded CPU kernels and double precision
+pip install "zilver[network]"   # node, registry and network client
+pip install "zilver[qiskit]"    # Qiskit Aer, for the comparison benchmarks
 ```
+
+### Run it on an AMD GPU
+
+Install PyTorch for ROCm first, then:
+
+```bash
 pip install zilver
 python -m zilver.gpu
 ```
 
+This runs one circuit at each width from 20 to 32 qubits and stops early when memory runs out. For each width it prints the time and the norm of the final state. A norm of 1.0000000 means the arithmetic is correct. Use `FROM=24 TO=30 python -m zilver.gpu` to pick the widths.
+
 New to Zilver? The [Quickstart](QUICKSTART.md) goes from install to a trained circuit in a few minutes.
+
+## Quick start
 
 ```python
 import numpy as np
@@ -36,38 +63,28 @@ circuit = hardware_efficient(n_qubits=10, depth=3)
 params  = np.random.default_rng(0).uniform(-np.pi, np.pi, circuit.n_params)
 
 sv = circuit.statevector(params)
-print(sv.numpy().shape, sv.dtype)
-```
-
-That is the entire setup. No accounts, no API keys, no registration.
-
-For the multithreaded CPU path and double-precision simulation, install the optional extra:
-
-```bash
-pip install "zilver[accel]"
+print(sv.numpy().shape, sv.dtype)   # (1024,) complex64
 ```
 
 ## What you can build
 
-Zilver ships the primitives QML practitioners use daily.
-
-**Variational algorithms.** Parameter-shift gradients, batched over a parameter vector or a parameter grid, fused into a single MLX dispatch.
+**Variational algorithms.** Parameter-shift gradients for one parameter vector or a whole batch, computed in a single MLX dispatch.
 
 ```python
 import mlx.core as mx
-from zilver.gradients import param_shift_gradient, param_shift_gradient_batched
+from zilver.gradients import param_shift_gradient
 
 f = circuit.compile(observable="sum_z")
 g = param_shift_gradient(f, mx.array(params.astype(np.float32)))
 ```
 
-**Quantum kernel methods.** A fidelity kernel `|<psi_i|psi_j>|^2` for an N-sample batch is one call, computed on-device.
+**Quantum kernel methods.** The fidelity kernel `|<psi_i|psi_j>|^2` for N samples is one call, computed on the GPU.
 
 ```python
-K = circuit.fidelity_kernel(batch_params)  # (N, N) numpy float32
+K = circuit.fidelity_kernel(batch_params)   # (N, N) float32
 ```
 
-**Loss-landscape and barren-plateau analysis.** A 2D parameter sweep at fixed depth is one vmap dispatch.
+**Loss landscapes and barren plateaus.** A 2D parameter sweep is one vectorised (`vmap`) dispatch.
 
 ```python
 from zilver.landscape import LossLandscape
@@ -76,7 +93,7 @@ land = LossLandscape(circuit, sweep_params=(0, 1), resolution=32).compute()
 print(land.trainability_score(), land.plateau_coverage())
 ```
 
-**Noisy simulation.** `NoisyCircuit` runs on the density-matrix backend, and a `NoiseModel` applies Kraus channels automatically after every gate — depolarizing, or thermal relaxation built straight from device `T1`/`T2` and gate times.
+**Noisy simulation.** `NoisyCircuit` runs on the density-matrix backend. A `NoiseModel` applies Kraus channels after every gate. You can use depolarizing noise, or thermal relaxation built from a device's `T1`/`T2` and gate times.
 
 ```python
 import mlx.core as mx
@@ -92,29 +109,55 @@ f = nc.compile(observable="sum_z", noise_model=noise)
 exp = f(mx.array([0.7]))
 ```
 
-## Statevector backends
+**Wide, shallow circuits.** `MPSCircuit` simulates with matrix product states, so memory grows with entanglement instead of doubling with every qubit.
 
-`Circuit.statevector(params, method=..., precision=...)` selects how the circuit executes.
+```python
+from zilver.tensor_network import MPSCircuit
 
-`method="metal"` runs hand-written Metal compute kernels for RY, RZ, RX, H, X, CNOT, CZ, RZZ, and U3, fused into a single graph by `mx.compile`. Single precision (complex64). The default for single-statevector evaluation.
+mps = MPSCircuit(40, chi_max=32)
+for q in range(40):
+    mps.ry(q, q)
+for q in range(39):
+    mps.cnot(q, q + 1)
+print(mps.compile(observable="sum_z")(mx.array([0.3] * 40)))
+```
 
-`method="accel"` runs a multithreaded CPU path on Numba and Accelerate. It auto-routes between strided NumPy (small circuits), tape-lowered JIT dispatch, and k=2 fused blocks based on qubit count. Supports complex64 and complex128. Requires the `accel` extra.
+More in [`examples/`](examples): VQA optimisation, barren plateaus, circuit cutting, noisy VQE.
 
-`method="mlx"` is the generic MLX path. Use it for batched workloads such as parameter sweeps, gradient batches, and fidelity kernels where `mx.vmap` over the parameter axis is the dominant compute pattern.
+## Execution paths
 
-`method="auto"` (the default) picks `metal` when the circuit uses only supported gate kinds and `precision="single"`, otherwise `accel`.
+`Circuit.statevector(params, method=..., precision=...)` chooses how a circuit runs.
 
-The wider simulation surface (density-matrix and tensor-network backends) is selected at job-submission time via the `backend` flag.
+| `method` | Runs on | Precision | Use it for |
+|---|---|---|---|
+| `"auto"` (default) | Picks `metal` if every gate is supported and precision is single; otherwise `accel` | as requested | Most work |
+| `"metal"` | Hand-written Metal kernels for RY, RZ, RX, H, X, CNOT, CZ, RZZ and U3, combined into one graph by `mx.compile` | complex64 | One statevector at a time on Apple silicon |
+| `"accel"` | Multithreaded Numba CPU kernels; chooses between NumPy, compiled per-gate code and fused two-qubit blocks based on circuit size | complex64 or complex128 | Double precision; machines without a GPU. Needs `[accel]` |
+| `"mlx"` | The array layer: MLX on Apple silicon, PyTorch or NumPy elsewhere | complex64 | Batched sweeps with `vmap`; the AMD GPU path |
 
-| Backend | Flag | Approximate ceiling on a 16 GB M-series |
-|---------|------|----------------------------------------|
-| Statevector | sv | 30 qubits |
-| Density matrix | dm | 15 qubits |
-| Tensor network | tn | 50+ qubits, circuit-dependent |
+Environment variables for the non-Apple paths:
+
+| Variable | Effect |
+|---|---|
+| `ZILVER_BACKEND=torch` | Use PyTorch instead of MLX or NumPy. Set it before importing `zilver`. |
+| `ZILVER_DEVICE` | PyTorch device: `cuda` (which also covers ROCm), `mps`, `cpu` or `directml`. By default Zilver tries `cuda`, then `mps`, then DirectML, then `cpu`. |
+| `ZILVER_HIP=0` | Turn off the fused HIP kernel and use the generic PyTorch path. |
+
+On a device with no complex dtype, such as DirectML, the state is stored as a pair of real arrays. Zilver refuses to create complex tensors there, because DirectML crashes the process instead of raising an error.
+
+### Memory
+
+A single-precision statevector takes 8 × 2ⁿ bytes: 1 GiB at 27 qubits, 32 GiB at 32. A density matrix takes 8 × 4ⁿ bytes. Most gate paths briefly need two to three times the state's memory. The fused HIP kernel updates the state in place, which is why a 64 GiB device can hold 32 qubits.
+
+| Backend | Approximate ceiling, 16 GB Apple silicon |
+|---|---|
+| Statevector | 30 qubits |
+| Density matrix | 15 qubits |
+| Matrix product state | 50+ qubits, depending on entanglement |
 
 ## Performance
 
-Single statevector, hardware-efficient ansatz at depth 2, on Apple M1 Pro with 16 GB unified memory. Wall time in milliseconds, minimum of four trials; lower is better.
+Single statevector, hardware-efficient ansatz at depth 2, on an Apple M1 Pro with 16 GB of unified memory. Wall time in milliseconds, best of four runs; lower is better.
 
 | Qubits | Zilver (Metal) | Qiskit Aer |
 |-------:|---------------:|-----------:|
@@ -124,57 +167,78 @@ Single statevector, hardware-efficient ansatz at depth 2, on Apple M1 Pro with 1
 |     22 |          70.31 |     148.44 |
 |     24 |         334.63 |     588.61 |
 
-Two-qubit process fidelity against the ideal unitary: CNOT and CZ are bit-exact on every backend. RZZ on the Metal path is within 3.4e-08 of ideal, the float32 floor. The Accel path with `precision="double"` reproduces ideal to numerical zero.
+CNOT and CZ reproduce the ideal two-qubit process exactly on every backend. RZZ on the Metal path is within 3.4e-08 of ideal, which is the limit of float32. The `accel` path with `precision="double"` matches the ideal unitary to numerical zero.
 
-## Join the Zilver network
+Reproduce the comparison with `python benchmarks/vs_qiskit_aer.py` (needs `[qiskit]`). The noise model is validated against real IBM and IQM hardware in [`benchmarks/`](benchmarks).
 
-Everything above runs standalone on your Mac/Mini. If you want to contribute compute or run jobs across a distributed pool of Apple Silicon nodes, the Zilver network adds that as a separate, opt-in layer.
+## The Zilver network
 
-The network connects Apple Silicon nodes into a shared simulation fabric. Researchers submit jobs to the registry; the registry matches to a capable node; the node executes and returns a cryptographically signed result.
+Everything above runs standalone. The network is a separate, opt-in layer for running jobs on other people's Macs, or lending yours.
 
-### Join as a node operator
+**Status: invite-only preview.** Nodes are Apple-silicon Macs. Wire formats and endpoints may change between minor releases.
 
-Node registration is invite-only during the current phase. Open an issue with your chip model and intended uptime; on approval you will receive a registry API key.
+A job goes through three steps:
+
+1. The client asks the registry for a node that supports the job's backend and qubit count.
+2. The registry picks an online node that can hold the job and returns its address.
+3. The client sends the circuit straight to the node. The node runs it and returns the result.
+
+With `NetworkCoordinator.submit`, the circuit goes only to the node. The registry matches jobs to nodes and keeps the node list, but never receives the circuit.
+
+### Submit jobs
+
+Client access is by invitation. Open an issue describing your use case; once approved, you receive a client key.
+
+```python
+from zilver.circuit import Circuit
+from zilver.client import NetworkCoordinator
+from zilver.node import job_from_circuit
+
+c = Circuit(4)
+c.h(0); c.cnot(0, 1); c.ry(2, 0)
+
+coord = NetworkCoordinator("https://registry.siriusquantum.com",
+                           client_api_key="your-key")
+
+job    = job_from_circuit(c, params=[1.57], observable="sum_z", backend="sv")
+result = coord.submit(job)
+print(result.expectation, result.elapsed_ms)
+```
+
+Network jobs run on the statevector backend (`sv`). Noisy and tensor-network simulation are available locally through `NoisyCircuit` and `MPSCircuit`.
+
+`result.verify(job)` checks that the result's checksum matches the job id, the parameters and the returned value. It only checks that these fields agree. It does not re-run the circuit.
+
+### Run a node
+
+Node registration is invite-only. Open an issue with your chip model, unified memory and intended uptime.
 
 ```bash
 pip install "zilver[network]"
 zilver-node start \
   --registry https://registry.siriusquantum.com \
-  --public-url https://your-public-url.example.com
+  --public-url https://your-node.example.com \
+  --backends sv
 ```
 
-See [NODES.md](NODES.md) for setup requirements, public URL options, and identity management.
+The node must be reachable from the internet; a Cloudflare Tunnel is the simplest way. The node detects its chip and memory at startup and reports its qubit limits to the registry. See [NODES.md](NODES.md) for public-URL options, identity and troubleshooting.
 
-### Submit jobs as a researcher
+Other commands:
 
-Client API access is also by invitation. Open an issue describing your use case and institution; on approval you will receive a client key.
-
-```python
-from zilver.client import NetworkCoordinator
-from zilver.node import SimJob
-
-coord = NetworkCoordinator(
-    "https://registry.siriusquantum.com",
-    client_api_key="your-key",
-)
-
-job = SimJob(
-    circuit_ops=[{"type": "ry", "qubits": [0], "param_idx": 0}],
-    n_qubits=4, n_params=1, params=[1.57], backend="sv",
-)
-
-result = coord.submit(job)
-print(result.expectation)
-print(result.verify(job))
+```bash
+zilver-node status      --registry URL   # network summary
+zilver-node nodes       --registry URL   # online nodes
+zilver-node dashboard   --registry URL   # live terminal view
+zilver-node leaderboard --registry URL   # contribution ledger
 ```
 
 ## Status
 
-Zilver is under active development. Public APIs and wire formats may change between minor releases.
+Zilver is alpha software under active development. Public APIs and wire formats may change between minor releases. See the [changelog](CHANGELOG.md).
 
-## Feedback and contributions
+## Contributing
 
-Open an issue on [GitHub](https://github.com/Sirius-Quantum/zilver/issues) or write to [info@siriusquantum.com](mailto:info@siriusquantum.com).
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). For anything else, write to [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
 
 ## License
 
