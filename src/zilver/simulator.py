@@ -428,6 +428,93 @@ def _hip_apply(state, gate, qubits, n):
 # registers, 16 waves a SIMD, against 119/12 at m=4 and 192/8 at m=5).
 _FUSE_MAX = int(os.environ.get("ZILVER_FUSE", "4"))
 
+# Off by default: it reorders gates and relabels bits, and either can produce a perfectly
+# normalised WRONG state. Turn it on deliberately, where the equivalence test runs.
+_SHRINK = os.environ.get("ZILVER_SHRINK", "0") == "1"
+
+
+def _growth_schedule(plan, n):
+    """Reorder gates to grow the support slowly, and choose the bit gauge that makes the
+    live region contiguous. Returns (reordered plan with qubits relabelled, pi).
+
+    A run starts at |0...0>, so after the schedule has touched only qubit set S the state
+    is EXACTLY (dense 2^|S|) tensor |0>. Two independent choices exploit that:
+
+      REORDER  among gates whose predecessors are done, take one adding the fewest NEW
+               qubits. Frontier minimisation on the gate DAG -- the same object as
+               elimination ordering in sparse Cholesky. Counted on the published circuit
+               at n=32: 19 passes -> 1.57 equivalent full passes.
+
+      GAUGE    which BIT each logical qubit occupies is free to pick, once, at schedule
+               time. Pick bit order = reverse first-touch order, so the first-touched
+               qubit sits in the LOWEST bit and the live amplitudes are the contiguous
+               prefix state[:2^K]. Without it the live region is strided by 2^(n-K) --
+               one amplitude per page -- and shrinking buys nothing.
+
+    Reordering is legal exactly when each qubit's own gate order is preserved; gates on
+    disjoint qubits commute, so the DAG is the whole constraint. The qubit list WITHIN a
+    gate is relabelled elementwise and never reordered -- permuting it scrambles which
+    wire the matrix acts on while leaving the norm at exactly 1.0.
+    """
+    last, preds = {}, []
+    for i, (_, qs) in enumerate(plan):
+        preds.append({last[q] for q in qs if q in last})
+        for q in qs:
+            last[q] = i
+
+    done, order, support = set(), [], set()
+    rem = set(range(len(plan)))
+    while rem:
+        ready = [i for i in rem if preds[i] <= done]
+        if not ready:                        # would mean the DAG build is wrong
+            raise RuntimeError("growth schedule: no ready gate")
+        i = min(ready, key=lambda i: (len(set(plan[i][1]) - support), i))
+        support |= set(plan[i][1])
+        done.add(i)
+        rem.discard(i)
+        order.append(i)
+
+    ft, seen = [], set()
+    for i in order:
+        for q in sorted(plan[i][1]):
+            if q not in seen:
+                seen.add(q)
+                ft.append(q)
+    pi = {q: n - 1 - k for k, q in enumerate(ft)}
+    # UNTOUCHED QUBITS KEEP THE LOWEST FREE SLOT, IN THEIR OWN ORDER -- they must not
+    # continue the descending assignment. That bug made a GATELESS circuit come back as a
+    # full bit reversal instead of the identity, so _ungauge then tried an axis permutation
+    # of a 31-qubit tensor (rank cap 16) and a second 34.36 GB buffer at 32. The benchmark
+    # measures allocation with an empty circuit, so it hit this before any real run and
+    # both ladder directions died identically. Every test I had built circuits WITH gates.
+    free = [s for s in range(n) if s not in set(pi.values())]
+    for q, slot in zip((q for q in range(n) if q not in pi), free):
+        pi[q] = slot
+    return [(plan[i][0], [pi[q] for q in plan[i][1]]) for i in order], pi
+
+
+def _ungauge(state, pi, n):
+    """Put the state back in LOGICAL bit order. Free when pi is the identity.
+
+    pi IS the identity exactly when first touch already runs from the last qubit down --
+    a ladder written CNOT(n-1,n-2),(n-2,n-3),... So for a circuit we emit ourselves we
+    name the qubits that way and never pay this at all.
+
+    When pi is not the identity this is a bit permutation, i.e. an axis permutation of
+    the [2]*n view, and it needs a SECOND FULL BUFFER: another 34.36 GB at 32 qubits
+    against a 64 GiB window, which is the same wall that closed 33 qubits. So this path
+    is for moderate widths, and wide runs use a circuit whose gauge is already identity.
+    """
+    if all(pi[q] == q for q in range(n)):
+        return state
+    axes = [pi[q] for q in range(n)]         # logical qubit q currently lives on axis pi[q]
+    t = state.reshape([2] * n)
+    try:
+        t = mx.transpose(t, axes)
+    except Exception:                        # torch spells it permute
+        t = t.permute(*axes).contiguous()
+    return t.reshape(-1)
+
 
 def _embed(g, gq, span):
     """Lift a gate on `gq` into the space of `span`. qubits[0] is the HIGH bit, both times."""
