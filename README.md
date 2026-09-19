@@ -142,6 +142,7 @@ Environment variables for the non-Apple paths:
 | `ZILVER_BACKEND=torch` | Use PyTorch instead of MLX or NumPy. Set it before importing `zilver`. |
 | `ZILVER_DEVICE` | PyTorch device: `cuda` (which also covers ROCm), `mps`, `cpu` or `directml`. By default Zilver tries `cuda`, then `mps`, then DirectML, then `cpu`. |
 | `ZILVER_HIP=0` | Turn off the fused HIP kernel and use the generic PyTorch path. |
+| `ZILVER_SHRINK=1` | Shrink each pass to the touched support: a run starts at all-zeros, so until the schedule has touched K qubits a pass need only cover 2^K amplitudes instead of 2^n. Read at import. Off by default; `python -m zilver.gpu` turns it on. It reorders gates and renames qubits (the state is unchanged), and the saving is a fixed warm-up — large on shallow circuits, small on deep ones. |
 
 On a device with no complex dtype, such as DirectML, the state is stored as a pair of real arrays. Zilver refuses to create complex tensors there, because DirectML crashes the process instead of raising an error.
 

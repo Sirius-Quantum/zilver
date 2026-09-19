@@ -5,7 +5,10 @@
     FROM=24 TO=30 python -m zilver.gpu    # PowerShell: $env:FROM=24; $env:TO=30
 
 The circuit at each width is a Hadamard and a Y-rotation on every qubit, then a
-CNOT chain. Prints the device it got, then seconds and the state norm per width.
+CNOT chain, emitted from the LAST qubit down so that support shrinking costs
+nothing to undo -- see the note on the circuit below. Shrinking is ON here;
+ZILVER_SHRINK=0 turns it off and gives the dense timings instead.
+Prints the device it got, then seconds and the state norm per width.
 Norm is the correctness check that costs nothing -- a unitary circuit ends at
 1.0, so anything else means the arithmetic drifted.
 """
@@ -16,19 +19,27 @@ import sys
 import time
 
 
-def _relaunch_on_gpu_backend():
-    """Make sure the backend is chosen as the GPU one, before anything is timed.
+def _relaunch_with_import_time_env():
+    """Set the variables zilver reads AT IMPORT, before anything is timed.
 
-    zilver picks its array backend when the package is first imported, and for
-    `python -m zilver.gpu` that happens before this module runs. With
-    ZILVER_BACKEND unset, a machine without MLX falls back to the numpy CPU
-    path, and this runner would time the CPU while claiming the GPU. So when the
-    variable is unset, set it and run once more in a fresh process, where the
-    choice is made correctly from the start. An explicit setting is respected.
+    Two choices are fixed when the package is first imported and cannot be
+    changed afterwards: the array backend (ZILVER_BACKEND, read by _array) and
+    support shrinking (ZILVER_SHRINK, read by simulator). For
+    `python -m zilver.gpu` both of those imports happen before this module runs.
+
+    With ZILVER_BACKEND unset, a machine without MLX falls back to the numpy CPU
+    path, and this runner would time the CPU while claiming the GPU. With
+    ZILVER_SHRINK unset the run is dense, which is not the configuration this
+    runner reports. So whatever is unset is set here and the module runs once
+    more in a fresh process, where both choices are made correctly from the
+    start. An explicit setting is always respected, so ZILVER_SHRINK=0 still
+    gives the dense timings.
     """
-    if "ZILVER_BACKEND" in os.environ:
+    want = {"ZILVER_BACKEND": "torch", "ZILVER_SHRINK": "1"}
+    missing = {k: v for k, v in want.items() if k not in os.environ}
+    if not missing:
         return
-    env = dict(os.environ, ZILVER_BACKEND="torch")
+    env = dict(os.environ, **missing)
     sys.exit(subprocess.call([sys.executable, "-m", "zilver.gpu", *sys.argv[1:]], env=env))
 
 
@@ -37,7 +48,7 @@ def main():
     # a normal traceback never appears. faulthandler prints the Python stack on a
     # fatal signal, which is the only way to see WHERE from outside the box.
     faulthandler.enable()
-    _relaunch_on_gpu_backend()
+    _relaunch_with_import_time_env()
 
     import numpy as np
     import zilver._array as _a
@@ -62,11 +73,20 @@ def main():
 
     for n in range(int(os.environ.get("FROM", "20")), int(os.environ.get("TO", "32")) + 1):
         gb = (2 ** n) * 8 / 1e9
+        # EMITTED FROM THE LAST QUBIT DOWN, single-qubit layer included.
+        # Support shrinking picks its bit gauge from FIRST-TOUCH order: when
+        # first touch runs n-1, n-2, ... that gauge is the identity and the
+        # un-gauge at the end is free. Emitted ascending it is a full bit
+        # reversal instead, and un-gauging then needs a SECOND full buffer --
+        # another 34.36 GB at 32 qubits, which does not exist in the window.
+        # The H/RY layer runs before the ladder, so IT sets first touch:
+        # reversing only the CNOTs leaves the gauge unchanged. This renames the
+        # qubits and changes no physics.
         c = Circuit(n); pi = 0
-        for q in range(n):
+        for q in range(n - 1, -1, -1):
             c.h(q); c.ry(q, pi); pi += 1
-        for q in range(n - 1):
-            c.cnot(q, q + 1)
+        for q in range(n - 1, 0, -1):
+            c.cnot(q, q - 1)
         p = [0.1 * (i + 1) for i in range(pi)]
         try:
             t = time.perf_counter()
