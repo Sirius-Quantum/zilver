@@ -1,0 +1,93 @@
+# What ships is an ALLOWLIST. The two lists below name the files that go into
+# the published wheel and sdist; anything not named is not published.
+#
+# WHY NOT AN EXCLUDE LIST. Under `exclude`, a new file is published by default
+# and stays published until someone remembers to list it. Under `only-include`,
+# a new file is absent until someone adds it here deliberately -- so a mistake
+# surfaces as a missing feature, which you notice at once, rather than as an
+# unintended publication, which you may not notice at all. Prefer the default
+# that fails safely.
+#
+# NOTE, load-bearing: hatchling reads THIS file INSTEAD OF the [tool.hatch]
+# table in pyproject.toml; it does not merge the two. pyproject still carries
+# `[tool.hatch.build.targets.wheel] packages = ["src/zilver"]`, which has no
+# effect while this file exists. Moving these settings into pyproject, or
+# deleting this file, changes what ships and reports no error either way.
+#
+# Keep the two lists in step: the wheel ships the package, the sdist ships the
+# package plus the docs and examples.
+
+[build.targets.wheel]
+only-include = [
+    "src/zilver/__init__.py",
+    "src/zilver/_array.py",
+    "src/zilver/accel.py",
+    "src/zilver/batch_distributor.py",
+    "src/zilver/circuit.py",
+    "src/zilver/cli.py",
+    "src/zilver/client.py",
+    "src/zilver/coordinator.py",
+    "src/zilver/cutting.py",
+    "src/zilver/density_matrix.py",
+    "src/zilver/fused.py",
+    "src/zilver/gates.py",
+    "src/zilver/gpu.py",
+    "src/zilver/gradients.py",
+    "src/zilver/hip_ext.py",
+    "src/zilver/landscape.py",
+    "src/zilver/ledger.py",
+    "src/zilver/metal.py",
+    "src/zilver/node_types.py",
+    "src/zilver/node.py",
+    "src/zilver/passes.py",
+    "src/zilver/qasm_bridge.py",
+    "src/zilver/registry_server.py",
+    "src/zilver/registry.py",
+    "src/zilver/server.py",
+    "src/zilver/simulator.py",
+    "src/zilver/tensor_network.py",
+    "src/zilver/verification.py",
+    "src/zilver/hip",
+]
+sources = ["src"]
+
+[build.targets.sdist]
+only-include = [
+    "src/zilver/__init__.py",
+    "src/zilver/_array.py",
+    "src/zilver/accel.py",
+    "src/zilver/batch_distributor.py",
+    "src/zilver/circuit.py",
+    "src/zilver/cli.py",
+    "src/zilver/client.py",
+    "src/zilver/coordinator.py",
+    "src/zilver/cutting.py",
+    "src/zilver/density_matrix.py",
+    "src/zilver/fused.py",
+    "src/zilver/gates.py",
+    "src/zilver/gpu.py",
+    "src/zilver/gradients.py",
+    "src/zilver/hip_ext.py",
+    "src/zilver/landscape.py",
+    "src/zilver/ledger.py",
+    "src/zilver/metal.py",
+    "src/zilver/node_types.py",
+    "src/zilver/node.py",
+    "src/zilver/passes.py",
+    "src/zilver/qasm_bridge.py",
+    "src/zilver/registry_server.py",
+    "src/zilver/registry.py",
+    "src/zilver/server.py",
+    "src/zilver/simulator.py",
+    "src/zilver/tensor_network.py",
+    "src/zilver/verification.py",
+    "src/zilver/hip",
+    "examples",
+    "README.md",
+    "QUICKSTART.md",
+    "CHANGELOG.md",
+    "NODES.md",
+    "MANIFESTO.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+]
