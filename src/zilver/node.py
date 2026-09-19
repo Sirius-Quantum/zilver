@@ -107,9 +107,14 @@ class Node:
     `execute(job)` API usable both locally and by the P2P layer.
 
     Usage:
-        node = Node.start(backends=["sv", "dm"])
+        node = Node.start(backends=["sv", "dm"],
+                          public_key_bytes=pub, private_key_bytes=priv)
         result = node.execute(job)
         assert result.verify(job)
+
+    A node with no signing key must say so: `Node.start(..., allow_unsigned=True)`.
+    Its results carry an empty signature, and no client can tell that apart from
+    a forgery, so it is for local use only.
     """
 
     def __init__(self, caps: NodeCapabilities):
@@ -124,6 +129,7 @@ class Node:
         private_key_bytes: bytes | None = None,
         public_key_bytes:  bytes | None = None,
         se_label:          str   | None = None,
+        allow_unsigned:    bool        = False,
     ) -> "Node":
         """
         Initialize a node with auto-detected hardware capabilities.
@@ -135,18 +141,42 @@ class Node:
             private_key_bytes: raw private key bytes for result signing (None for SE)
             public_key_bytes:  raw public key bytes
             se_label:          hardware key label (takes priority over private_key_bytes)
+            allow_unsigned:    run WITHOUT a signing key. Every result is then
+                               unverifiable; only for local and test use.
+
+        Raises:
+            ValueError: no signing key and allow_unsigned is False.
+
+        WHY THIS REFUSES. An unsigned result carries `node_signature = ""`, and
+        `verify_result_signature()` returns False for an empty signature exactly
+        as it does for a forged one -- so a client cannot tell an honest unsigned
+        node from an attacker. Starting unsigned has to be a decision someone
+        made, not a state a missing module drops the node into silently.
         """
+        signed = public_key_bytes is not None and (
+            private_key_bytes is not None or se_label is not None
+        )
+        if not signed and not allow_unsigned:
+            raise ValueError(
+                "Node.start(): no signing key, so every result would be returned "
+                "unsigned and no client could distinguish it from a forgery. Pass "
+                "public_key_bytes together with private_key_bytes or se_label, or "
+                "pass allow_unsigned=True for an explicitly unverifiable local node."
+            )
         caps = NodeCapabilities.detect(backends=backends, node_id=node_id)
         node = cls(caps)
         node._wallet            = wallet
         node._private_key_bytes = private_key_bytes
         node._public_key_bytes  = public_key_bytes
         node._se_label          = se_label
+        node._signed            = signed
         return node
 
     def execute(self, job: SimJob) -> JobResult:
         """
-        Execute a simulation job and return a signed result.
+        Execute a simulation job and return the result, signed when this node
+        holds a key. A node started with allow_unsigned=True returns an empty
+        signature, which no client can distinguish from a forgery.
 
         Raises ValueError if the node cannot handle the job
         (backend unsupported, qubit count exceeds capacity, or
@@ -222,7 +252,11 @@ class Node:
         else:
             proof = _compute_proof(job.job_id, job.params, expectation)
 
-        # Sign the proof if we have a key
+        # Sign the proof. Reaching here without a key means the node was started
+        # with allow_unsigned=True, so that is a declared state rather than an
+        # accident. A signing FAILURE while holding a key is never silent: this
+        # used to be `except Exception: pass`, which returned an empty signature
+        # that no client can tell apart from a forgery.
         node_signature = ""
         node_pubkey    = ""
         private_key_bytes = getattr(self, "_private_key_bytes", None)
@@ -233,10 +267,14 @@ class Node:
         ):
             try:
                 from .security import sign_result
-                node_signature = sign_result(proof, private_key_bytes, se_label)
-                node_pubkey    = public_key_bytes.hex()
-            except Exception:
-                pass
+            except ImportError as exc:
+                raise RuntimeError(
+                    "this node holds a signing key but the security module is "
+                    "unavailable, so the result cannot be signed; refusing to "
+                    "return it unsigned"
+                ) from exc
+            node_signature = sign_result(proof, private_key_bytes, se_label)
+            node_pubkey    = public_key_bytes.hex()
 
         return JobResult(
             expectation        = expectation,
