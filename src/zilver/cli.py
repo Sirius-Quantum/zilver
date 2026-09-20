@@ -162,14 +162,32 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
     except Exception as exc:
         print(f"Warning: could not load node identity: {exc}", file=sys.stderr)
 
-    node = Node.start(
-        backends           = backends,
-        node_id            = derived_node_id,
-        wallet             = args.wallet,
-        private_key_bytes  = private_key_bytes,
-        public_key_bytes   = public_key_bytes,
-        se_label           = _se_label,
-    )
+    allow_unsigned = getattr(args, "allow_unsigned", False)
+    try:
+        node = Node.start(
+            backends           = backends,
+            node_id            = derived_node_id,
+            wallet             = args.wallet,
+            private_key_bytes  = private_key_bytes,
+            public_key_bytes   = public_key_bytes,
+            se_label           = _se_label,
+            allow_unsigned     = allow_unsigned,
+        )
+    except ValueError:
+        # No signing key. Say what is missing and what the two ways forward are,
+        # in CLI terms — the exception's own text is written for API callers, and
+        # a user's first run should not end in a traceback either way.
+        sys.exit(
+            "This node has no signing key, so every result it returned would be "
+            "unsigned — and a client cannot tell an unsigned result from a forged "
+            "one.\n\n"
+            "  * To run a node on the Zilver network, a node identity is "
+            "required — see NODES.md.\n"
+            "  * To run locally without signing, start with --allow-unsigned."
+        )
+
+    if allow_unsigned and public_key_bytes is None:
+        print("Warning: running UNSIGNED — results are unverifiable.", file=sys.stderr)
 
     print(f"Node {node.caps.node_id[:8]} | chip: {node.caps.chip} | "
           f"RAM: {node.caps.ram_gb}GB | backends: {node.caps.backends} | "
@@ -657,6 +675,11 @@ def _build_node_parser() -> argparse.ArgumentParser:
         "--api-key", dest="api_key", default=None,
         help="API key issued by the registry. "
              "If omitted, loaded from Keychain or obtained automatically on first run.",
+    )
+    grp_net.add_argument(
+        "--allow-unsigned", dest="allow_unsigned", action="store_true", default=False,
+        help="Start without a signing key. Every result is then unsigned, and no "
+             "client can tell it from a forgery — local and test use only.",
     )
 
     grp_tls = p_start.add_argument_group(

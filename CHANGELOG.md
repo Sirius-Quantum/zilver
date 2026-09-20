@@ -49,7 +49,9 @@ changes the Apple silicon or CPU results.
   returns False for an empty signature exactly as it does for a forged one — so
   a client could not tell an honest unsigned node from an attacker. Starting
   unsigned is now a decision someone makes rather than a state a missing module
-  drops the node into silently.
+  drops the node into silently. `zilver-node start --allow-unsigned` is the same
+  choice from the CLI; without it, a node with no key exits with a message naming
+  the two ways forward, not a traceback.
 - **A result that cannot be signed is no longer returned unsigned.** The signing
   path was `except Exception: pass`, so any failure while holding a key produced
   an empty signature and no error. It now raises.
