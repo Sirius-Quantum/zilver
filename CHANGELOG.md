@@ -61,6 +61,12 @@ changes the Apple silicon or CPU results.
   start` with the matching `Node.start(wallet=...)` argument.
 
 ### Fixed
+- **Metal kernels use precise `sin`/`cos`.** Under MLX 0.32 the fast-math
+  versions made RX, RY, RZ, RZZ and U3 very slightly non-unitary, always in the
+  same direction, so the norm shrank by about 1.5e-6 per layer: -4.4e-5 for
+  `hardware_efficient(10, 30)`. It now stays at float32 rounding (+4e-6 there),
+  the same as the generic MLX path, and the quick-start state is 10x closer to
+  Qiskit (max amplitude error 8.7e-8). No measurable change in speed.
 - `Circuit.fidelity_kernel()` and `statevector_batch()` accept a numpy array or
   list, as `statevector()` already did. The README example passed numpy and
   failed with `[tree_flatten] The argument should contain only arrays`.

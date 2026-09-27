@@ -49,8 +49,8 @@ _RY = mx.fast.metal_kernel(
         uint i = l * 2u * stride + r;
         uint j = i + stride;
         float th2 = theta[0] * 0.5f;
-        float c = metal::cos(th2);
-        float s = metal::sin(th2);
+        float c = metal::precise::cos(th2);
+        float s = metal::precise::sin(th2);
         float ar = state_in[2u * i];
         float ai = state_in[2u * i + 1u];
         float br = state_in[2u * j];
@@ -76,8 +76,8 @@ _RX = mx.fast.metal_kernel(
         uint i = l * 2u * stride + r;
         uint j = i + stride;
         float th2 = theta[0] * 0.5f;
-        float c = metal::cos(th2);
-        float s = metal::sin(th2);
+        float c = metal::precise::cos(th2);
+        float s = metal::precise::sin(th2);
         float ar = state_in[2u * i];
         float ai = state_in[2u * i + 1u];
         float br = state_in[2u * j];
@@ -102,8 +102,8 @@ _RZ = mx.fast.metal_kernel(
         uint qq = q[0];
         uint bit = (id >> (nn - 1u - qq)) & 1u;
         float th2 = theta[0] * 0.5f;
-        float c = metal::cos(th2);
-        float s = metal::sin(th2);
+        float c = metal::precise::cos(th2);
+        float s = metal::precise::sin(th2);
         float pr = c;
         float pi_v = bit == 0u ? -s : s;
         float vr = state_in[2u * id];
@@ -200,8 +200,8 @@ _RZZ = mx.fast.metal_kernel(
         bool bb = (id & mask_b) != 0u;
         bool agree = ba == bb;
         float th2 = theta[0] * 0.5f;
-        float c = metal::cos(th2);
-        float s = metal::sin(th2);
+        float c = metal::precise::cos(th2);
+        float s = metal::precise::sin(th2);
         // bits agree (ZZ=+1)  ->  e^{-i th2}  = c - i s
         // bits differ (ZZ=-1) ->  e^{+i th2}  = c + i s
         float pr = c;
@@ -226,12 +226,12 @@ _U3 = mx.fast.metal_kernel(
         uint r = id - l * stride;
         uint i = l * 2u * stride + r;
         uint j = i + stride;
-        float ct = metal::cos(theta[0] * 0.5f);
-        float st = metal::sin(theta[0] * 0.5f);
-        float cp = metal::cos(phi[0]);
-        float sp = metal::sin(phi[0]);
-        float cl = metal::cos(lam[0]);
-        float sl = metal::sin(lam[0]);
+        float ct = metal::precise::cos(theta[0] * 0.5f);
+        float st = metal::precise::sin(theta[0] * 0.5f);
+        float cp = metal::precise::cos(phi[0]);
+        float sp = metal::precise::sin(phi[0]);
+        float cl = metal::precise::cos(lam[0]);
+        float sl = metal::precise::sin(lam[0]);
         // U3 matrix elements
         // m00 = ct          (real)
         // m01 = -e^{i lam} * st     = (-cl*st, -sl*st)
