@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from .node import NodeCapabilities
 
 
+PUBLIC_REGISTRY = "https://registry.siriusquantum.com"
+
 # ---------------------------------------------------------------------------
 # Heartbeat daemon thread
 # ---------------------------------------------------------------------------
@@ -167,7 +169,6 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
         node = Node.start(
             backends           = backends,
             node_id            = derived_node_id,
-            wallet             = args.wallet,
             private_key_bytes  = private_key_bytes,
             public_key_bytes   = public_key_bytes,
             se_label           = _se_label,
@@ -443,62 +444,6 @@ def _cmd_node_dashboard(args: argparse.Namespace) -> None:
         console.print("\n[dim]Dashboard stopped.[/dim]")
 
 
-def _cmd_node_leaderboard(args: argparse.Namespace) -> None:
-    """
-    Fetch and print the SQT token leaderboard from the registry.
-
-    Displays the top nodes by balance in a Rich table with rank, node ID,
-    SQT balance, jobs completed, heartbeats sent, and genesis status.
-    """
-    from rich.console import Console
-    from rich.table import Table
-    from rich import box
-    import httpx
-
-    url = args.registry.rstrip("/")
-    try:
-        resp = httpx.get(f"{url}/leaderboard", params={"top_n": args.top_n}, timeout=10)
-        resp.raise_for_status()
-        entries = resp.json()
-    except Exception as exc:
-        print(f"Error fetching leaderboard: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-    console = Console()
-    if not entries:
-        console.print("[dim]Leaderboard is empty — no contributions recorded yet.[/dim]")
-        return
-
-    table = Table(
-        box=box.SIMPLE_HEAVY,
-        show_header=True,
-        header_style="bold cyan",
-        title="[bold white]SQT Leaderboard[/bold white]",
-        title_style="bold",
-    )
-    table.add_column("RANK",       width=5,  justify="right")
-    table.add_column("NODE ID",    width=12, no_wrap=True)
-    table.add_column("BALANCE",    width=12, justify="right")
-    table.add_column("JOBS",       width=7,  justify="right")
-    table.add_column("HEARTBEATS", width=11, justify="right")
-    table.add_column("GENESIS",    width=8,  justify="center")
-    table.add_column("REGISTERED", width=24, no_wrap=True)
-
-    for e in entries:
-        genesis = "[green]✓[/green]" if e.get("is_genesis") else "[dim]—[/dim]"
-        table.add_row(
-            str(e.get("rank", "")),
-            f"[dim]{e.get('node_id', '')[:12]}[/dim]",
-            f"[yellow]{e.get('balance', 0.0):.2f}[/yellow]",
-            str(e.get("jobs_done", 0)),
-            str(e.get("heartbeats", 0)),
-            genesis,
-            e.get("registered_at", "")[:19],
-        )
-
-    console.print(table)
-
-
 def _cmd_node_list(args: argparse.Namespace) -> None:
     """List all online nodes in the registry."""
     from .client import RegistryClient
@@ -568,7 +513,7 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
               file=sys.stderr)
 
     if ledger_path:
-        print(f"SQT ledger: {ledger_path}")
+        print(f"Ledger: {ledger_path}")
     if db_path:
         print(f"Registry DB: {db_path}")
     if audit_log_path:
@@ -659,17 +604,13 @@ def _build_node_parser() -> argparse.ArgumentParser:
     )
     grp_net.add_argument(
         "--registry", default=None,
-        help="Registry server URL, e.g. https://registry.siriusquantum.com.",
+        help=f"Registry server URL, e.g. {PUBLIC_REGISTRY}.",
     )
     grp_net.add_argument(
         "--public-url", dest="public_url", default=None,
         help="Externally reachable URL for this node "
              "(e.g. https://your-tunnel.example.com). "
              "Required when behind NAT or a Cloudflare Tunnel.",
-    )
-    grp_net.add_argument(
-        "--wallet", default=None,
-        help="Wallet address for future reward settlement.",
     )
     grp_net.add_argument(
         "--api-key", dest="api_key", default=None,
@@ -699,37 +640,26 @@ def _build_node_parser() -> argparse.ArgumentParser:
     # --- status -------------------------------------------------------------
     p_status = sub.add_parser("status", help="Print registry summary.")
     p_status.add_argument(
-        "--registry", required=True,
-        help="Registry server URL.",
+        "--registry", default=PUBLIC_REGISTRY,
+        help=f"Registry server URL (default: {PUBLIC_REGISTRY}).",
     )
 
     # --- nodes --------------------------------------------------------------
     p_nodes = sub.add_parser("nodes", help="List online nodes in the registry.")
     p_nodes.add_argument(
-        "--registry", required=True,
-        help="Registry server URL.",
+        "--registry", default=PUBLIC_REGISTRY,
+        help=f"Registry server URL (default: {PUBLIC_REGISTRY}).",
     )
 
     # --- dashboard ----------------------------------------------------------
     p_dash = sub.add_parser("dashboard", help="Live Rich TUI showing active nodes.")
     p_dash.add_argument(
-        "--registry", required=True,
-        help="Registry server URL.",
+        "--registry", default=PUBLIC_REGISTRY,
+        help=f"Registry server URL (default: {PUBLIC_REGISTRY}).",
     )
     p_dash.add_argument(
         "--interval", type=float, default=3.0,
         help="Refresh interval in seconds (default: 3).",
-    )
-
-    # --- leaderboard --------------------------------------------------------
-    p_lb = sub.add_parser("leaderboard", help="Show SQT token leaderboard.")
-    p_lb.add_argument(
-        "--registry", default="http://127.0.0.1:7701",
-        help="Registry server URL (default: http://127.0.0.1:7701).",
-    )
-    p_lb.add_argument(
-        "--top-n", dest="top_n", type=int, default=20,
-        help="Number of top nodes to display (default: 20).",
     )
 
     return parser
@@ -766,8 +696,7 @@ def _build_registry_parser() -> argparse.ArgumentParser:
     )
     p_start.add_argument(
         "--ledger-path", dest="ledger_path", default=None,
-        help="Path to SQT ledger JSON file (e.g. ~/.zilver/ledger.json). "
-             "If omitted, rewards are not tracked.",
+        help="Path to the job-accounting JSON file. If omitted, none is kept.",
     )
     p_start.add_argument(
         "--require-signed", dest="require_signed", action="store_true", default=False,
@@ -819,9 +748,18 @@ def main() -> None:
         "status":      _cmd_node_status,
         "nodes":       _cmd_node_list,
         "dashboard":   _cmd_node_dashboard,
-        "leaderboard": _cmd_node_leaderboard,
     }
-    dispatch[args.command](args)
+    if args.command == "start":
+        dispatch[args.command](args)
+        return
+    try:
+        import httpx
+    except ImportError:
+        sys.exit('The network commands need the network extra: pip install "zilver[network]"')
+    try:
+        dispatch[args.command](args)
+    except httpx.HTTPError as exc:
+        sys.exit(f"Cannot reach registry at {args.registry}: {exc or type(exc).__name__}")
 
 
 def main_registry() -> None:

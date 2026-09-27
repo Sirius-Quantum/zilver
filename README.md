@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](https://pypi.org/project/zilver/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](https://github.com/sirius-quantum/zilver/blob/master/LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-MLX%20%2B%20Metal-black.svg)](https://github.com/ml-explore/mlx)
 [![AMD ROCm](https://img.shields.io/badge/AMD%20ROCm-fused%20HIP%20kernel-red.svg)](https://rocm.docs.amd.com/)
 
@@ -51,7 +51,7 @@ python -m zilver.gpu
 
 This runs one circuit at each width from 20 to 32 qubits and stops early when memory runs out. For each width it prints the time and the norm of the final state. A norm of 1.0000000 means the arithmetic is correct. Use `FROM=24 TO=30 python -m zilver.gpu` to pick the widths.
 
-New to Zilver? The [Quickstart](QUICKSTART.md) goes from install to a trained circuit in a few minutes.
+New to Zilver? The [Quickstart](https://github.com/sirius-quantum/zilver/blob/master/QUICKSTART.md) goes from install to a trained circuit in a few minutes.
 
 ## Quick start
 
@@ -81,6 +81,7 @@ g = param_shift_gradient(f, mx.array(params.astype(np.float32)))
 **Quantum kernel methods.** The fidelity kernel `|<psi_i|psi_j>|^2` for N samples is one call, computed on the GPU.
 
 ```python
+batch_params = np.random.default_rng(1).uniform(-np.pi, np.pi, (8, circuit.n_params))
 K = circuit.fidelity_kernel(batch_params)   # (N, N) float32
 ```
 
@@ -222,7 +223,7 @@ zilver-node start \
   --backends sv
 ```
 
-The node must be reachable from the internet; a Cloudflare Tunnel is the simplest way. The node detects its chip and memory at startup and reports its qubit limits to the registry. See [NODES.md](NODES.md) for public-URL options, identity and troubleshooting.
+The node must be reachable from the internet; a Cloudflare Tunnel is the simplest way. The node detects its chip and memory at startup and reports its qubit limits to the registry. See [NODES.md](https://github.com/sirius-quantum/zilver/blob/master/NODES.md) for public-URL options, identity and troubleshooting.
 
 Other commands:
 
@@ -230,19 +231,18 @@ Other commands:
 zilver-node status      --registry URL   # network summary
 zilver-node nodes       --registry URL   # online nodes
 zilver-node dashboard   --registry URL   # live terminal view
-zilver-node leaderboard --registry URL   # contribution ledger
 ```
 
 ## Status
 
-Zilver is alpha software under active development. Public APIs and wire formats may change between minor releases. See the [changelog](CHANGELOG.md).
+Zilver is alpha software under active development. Public APIs and wire formats may change between minor releases. See the [changelog](https://github.com/sirius-quantum/zilver/blob/master/CHANGELOG.md).
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). For anything else, write to [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
+Issues and pull requests are welcome. See [CONTRIBUTING.md](https://github.com/sirius-quantum/zilver/blob/master/CONTRIBUTING.md). For anything else, write to [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](https://github.com/sirius-quantum/zilver/blob/master/LICENSE).
 
-[Read the Sirius Quantum Manifesto](MANIFESTO.md)
+[Read the Sirius Quantum Manifesto](https://github.com/sirius-quantum/zilver/blob/master/MANIFESTO.md)

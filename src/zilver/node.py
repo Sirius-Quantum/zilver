@@ -125,7 +125,6 @@ class Node:
         cls,
         backends: list[str] | None = None,
         node_id: str | None = None,
-        wallet: str | None = None,
         private_key_bytes: bytes | None = None,
         public_key_bytes:  bytes | None = None,
         se_label:          str   | None = None,
@@ -137,7 +136,6 @@ class Node:
         Args:
             backends:          list of ["sv", "dm", "tn"]; default ["sv"]
             node_id:           explicit node ID; auto-generated if None
-            wallet:            wallet address for reward settlement (future use)
             private_key_bytes: raw private key bytes for result signing (None for SE)
             public_key_bytes:  raw public key bytes
             se_label:          hardware key label (takes priority over private_key_bytes)
@@ -165,7 +163,6 @@ class Node:
             )
         caps = NodeCapabilities.detect(backends=backends, node_id=node_id)
         node = cls(caps)
-        node._wallet            = wallet
         node._private_key_bytes = private_key_bytes
         node._public_key_bytes  = public_key_bytes
         node._se_label          = se_label

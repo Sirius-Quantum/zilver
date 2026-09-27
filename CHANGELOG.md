@@ -56,6 +56,23 @@ changes the Apple silicon or CPU results.
   path was `except Exception: pass`, so any failure while holding a key produced
   an empty signature and no error. It now raises.
 
+### Removed
+- `zilver-node leaderboard`, and the unused `--wallet` option of `zilver-node
+  start` with the matching `Node.start(wallet=...)` argument.
+
+### Fixed
+- `Circuit.fidelity_kernel()` and `statevector_batch()` accept a numpy array or
+  list, as `statevector()` already did. The README example passed numpy and
+  failed with `[tree_flatten] The argument should contain only arrays`.
+- `python -m zilver.gpu` without PyTorch prints what it needs instead of a
+  `ModuleNotFoundError` traceback.
+- `zilver-node status`, `nodes` and `dashboard` default to the public registry,
+  and print one line instead of a traceback when it cannot be reached or the
+  `network` extra is missing. `start` is unchanged: without `--registry` it runs
+  standalone.
+- README links are absolute, so they work on the PyPI project page. The README
+  kernel example now defines `batch_params`.
+
 ### Notes
 - Support shrinking stays off by default *in the library*, because reordering
   gates and relabelling bits can each produce a perfectly normalised *wrong*

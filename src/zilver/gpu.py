@@ -48,6 +48,15 @@ def main():
     # a normal traceback never appears. faulthandler prints the Python stack on a
     # fatal signal, which is the only way to see WHERE from outside the box.
     faulthandler.enable()
+    if os.environ.get("ZILVER_BACKEND", "torch") == "torch":
+        import importlib.util
+        if importlib.util.find_spec("torch") is None:
+            sys.exit(
+                "python -m zilver.gpu runs the AMD GPU path and needs PyTorch for ROCm,\n"
+                "which is not installed: https://rocm.docs.amd.com/\n"
+                "On Apple silicon the GPU is used by default -- no extra step:\n"
+                "  from zilver.circuit import hardware_efficient"
+            )
     _relaunch_with_import_time_env()
 
     import numpy as np

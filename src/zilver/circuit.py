@@ -569,10 +569,13 @@ class Circuit:
 
         Args:
             params_batch: (m, n_params) float32 — one parameter vector per sample.
+                A numpy array or nested list is accepted and moved to the device.
 
         Returns:
             (m, 2^n_qubits) complex64 array of statevectors, on-device.
         """
+        if isinstance(params_batch, (np.ndarray, list, tuple)):
+            params_batch = mx.array(np.asarray(params_batch, dtype=np.float32))
         batched = mx.vmap(self._run)
         states = batched(params_batch)
         mx.eval(states)

@@ -15,7 +15,6 @@ from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
-from .ledger import Ledger
 from .node_types import NodeCapabilities
 from .registry import Registry
 
@@ -33,6 +32,11 @@ try:
     from . import _canary as _cn
 except ImportError:
     _cn = None  # type: ignore[assignment]
+
+try:
+    from .ledger import Ledger as _Ledger
+except ImportError:
+    _Ledger = None  # type: ignore[assignment,misc]
 
 _MAX_BODY_BYTES    = 64 * 1024
 _JOB_TOKEN_TTL     = 3600.0
@@ -93,7 +97,7 @@ def make_registry_app(
     registry:        Registry | None = None,
     admin_key:       str | None = None,
     rate_limit:      bool = False,
-    ledger:          Ledger | None = None,
+    ledger:          Any = None,
     require_signed:  bool = False,
     allowed_pubkeys: set[str] | None = None,
     client_keys:        set[str] | None = None,
@@ -120,9 +124,9 @@ def make_registry_app(
         ``POST /nodes`` → 5/min, ``GET /match`` → 60/min.
         Default ``False`` for test and dev compatibility.
     ledger:
-        :class:`~zilver.ledger.Ledger` instance to use for SQT reward
-        tracking.  When ``None`` (the default) reward endpoints are
-        available but return zero balances.
+        Optional job-accounting hook, notified on registration, heartbeat
+        and job report.  When ``None`` (the default) those endpoints return
+        only their own fields.
     require_signed:
         When ``True``, every ``POST /nodes`` registration must include a
         valid ``pubkey`` + ``signature`` + ``timestamp``.  Nodes
@@ -414,7 +418,7 @@ def make_registry_app(
         registered_at = datetime.now(tz=timezone.utc).isoformat()
 
         if ledger is not None:
-            ledger.ensure_account(caps.node_id, registered_at, registration_index)
+            ledger.on_register(caps.node_id, registered_at, registration_index)
 
         if _store is not None:
             _pk = node_pubkeys.get(caps.node_id, "")
@@ -479,8 +483,8 @@ def make_registry_app(
         if _store is not None:
             _store.update_heartbeat(node_id, time.time())
 
-        sqt_earned = ledger.reward_heartbeat(node_id) if ledger is not None else 0.0
-        return {"status": "ok", "node_id": node_id, "sqt_earned": sqt_earned}
+        extra = ledger.on_heartbeat(node_id) if ledger is not None else {}
+        return {"status": "ok", "node_id": node_id, **extra}
 
     # --- Discovery ----------------------------------------------------------
 
@@ -525,7 +529,7 @@ def make_registry_app(
         On success: ``NodeCapabilities.to_dict()`` plus ``"url"`` and a
         single-use ``"job_token"`` (32 hex chars).  The token must be
         included in the subsequent ``POST /nodes/{id}/contribute`` call to
-        authorise SQT reward crediting.  Tokens expire after one hour.
+        authorise the job report.  Tokens expire after one hour.
 
         Raises **404** if no eligible node exists.
         """
@@ -550,13 +554,13 @@ def make_registry_app(
         d["job_token"] = job_token
         return d
 
-    # --- Incentive layer -----------------------------------------------------
+    # --- Job reports ---------------------------------------------------------
 
     @app.post("/nodes/{node_id}/contribute",
               dependencies=[Depends(_check_body_size), Depends(_contribute_limit)])
     async def contribute(node_id: str, request: Request, body: dict[str, Any]) -> dict[str, Any]:
         """
-        Report a completed job contribution and credit SQT rewards.
+        Report a completed job to the registry.
 
         Called by :class:`~zilver.client.NetworkCoordinator` after a
         successful job execution.
@@ -578,7 +582,7 @@ def make_registry_app(
 
         Response
         ~~~~~~~~
-        ``{"sqt_earned": float, "balance": float}``
+        ``{"status": "ok"}``
         """
         # Validate body fields first — a malformed request must not consume a token
         try:
@@ -613,15 +617,14 @@ def make_registry_app(
         if _entry is None or not _entry.online:
             raise HTTPException(status_code=404, detail="Node not found")
 
-        sqt_earned = ledger.reward_job(node_id, elapsed_ms, memory_used_mb) if ledger is not None else 0.0
-        balance    = ledger.balance(node_id) if ledger is not None else 0.0
+        extra = ledger.on_job(node_id, elapsed_ms, memory_used_mb) if ledger is not None else {}
 
         _url = node_urls.get(node_id, "")
         _key = node_keys.get(node_id, "")
         if _url and _cn is not None:
             asyncio.create_task(_run_canary(node_id, _url, _key))
 
-        return {"sqt_earned": sqt_earned, "balance": balance}
+        return {"status": "ok", **extra}
 
     # --- Async job API -------------------------------------------------------
 
@@ -698,25 +701,6 @@ def make_registry_app(
             raise HTTPException(status_code=404, detail="Job not found")
         return {"job_id": job_id, **job}
 
-    @app.get("/leaderboard")
-    async def leaderboard(top_n: int = 20) -> list[dict[str, Any]]:
-        """
-        Return the top nodes ranked by SQT balance.
-
-        Query parameters
-        ~~~~~~~~~~~~~~~~
-        - ``top_n`` — number of entries to return (default 20, max 100)
-
-        Response
-        ~~~~~~~~
-        List of account dicts with fields: ``rank``, ``node_id``, ``balance``,
-        ``jobs_done``, ``heartbeats``, ``is_genesis``, ``registered_at``.
-        """
-        top_n = min(max(top_n, 1), 100)
-        if ledger is None:
-            return []
-        return ledger.leaderboard(top_n=top_n)
-
     @app.get("/summary")
     async def summary() -> dict[str, Any]:
         """
@@ -755,6 +739,9 @@ def make_registry_app(
             raise HTTPException(status_code=422, detail="Invalid estimate body")
         est = estimate_credits(DEFAULT_CONFIG, backend, n_qubits, shots)
         return asdict(est)
+
+    if ledger is not None and hasattr(ledger, "install"):
+        ledger.install(app)
 
     return app
 
@@ -807,7 +794,9 @@ def serve_registry(
         Path to the TLS certificate (PEM).
     """
     import uvicorn
-    _ledger = Ledger(Path(ledger_path)) if ledger_path else None
+    if ledger_path and _Ledger is None:
+        raise SystemExit("--ledger-path: no ledger is available")
+    _ledger = _Ledger(Path(ledger_path)) if ledger_path else None
     app = make_registry_app(
         registry,
         admin_key=admin_key,

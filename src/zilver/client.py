@@ -345,7 +345,7 @@ class RegistryClient:
         job_token:      str = "",
     ) -> dict[str, Any]:
         """
-        Report a completed job contribution and claim SQT rewards.
+        Report a completed job to the registry.
 
         Parameters
         ----------
@@ -364,7 +364,7 @@ class RegistryClient:
         Returns
         -------
         dict
-            ``{"sqt_earned": float, "balance": float}``
+            The registry's acknowledgement.
         """
         body = {
             "job_token":      job_token,

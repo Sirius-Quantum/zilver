@@ -79,7 +79,6 @@ Enable all three with `--backends sv,dm,tn`. The registry routes jobs to the app
 | `--port` | `7700` | Port to listen on |
 | `--registry` | — | Registry URL |
 | `--public-url` | — | Publicly reachable URL for this node |
-| `--wallet` | — | Wallet address for future reward settlement |
 
 ## Troubleshooting
 
