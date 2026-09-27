@@ -5,11 +5,11 @@
 ```bash
 git clone https://github.com/sirius-quantum/zilver
 cd zilver
-pip install -e ".[dev,network]"
-pytest tests/
+pip install -e ".[dev,qiskit]"
+python examples/vqa_optimization.py
 ```
 
-All 464 tests must pass before you start.
+Every script in `examples/` should run to completion before you start.
 
 ---
 
@@ -17,9 +17,14 @@ All 464 tests must pass before you start.
 
 1. Fork and create a branch from `master`.
 2. Make your change. One logical change per commit.
-3. Add tests — new behaviour needs coverage.
-4. `pytest tests/` — all green.
+3. Show that it works. New behaviour needs a runnable check that compares against
+   a known answer: a closed form, or Qiskit Aer. `benchmarks/statevector_vs_aer.py`
+   is an example of the pattern.
+4. Re-run the examples your change touches.
 5. Open a PR with a clear description of what changed and why.
+
+By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Report
+security problems privately, as described in [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -41,11 +46,11 @@ python scripts/guard.py --all
 ## Good first issues
 
 - Additional noise models for the density matrix backend
-- QASM / OpenQASM 2.0 import bridge
-- Benchmark comparisons against Qiskit Aer and PennyLane
+- OpenQASM 3.0 import (the bridge reads OpenQASM 2.0 today)
+- Benchmark comparisons against PennyLane
 
 ---
 
 ## License
 
-Contributions are licensed under Apache 2.0.
+Contributions are licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

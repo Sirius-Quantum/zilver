@@ -88,4 +88,5 @@ only-include = [
     "MANIFESTO.md",
     "CONTRIBUTING.md",
     "LICENSE",
+    "NOTICE",
 ]

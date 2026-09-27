@@ -123,7 +123,7 @@ for q in range(39):
 print(mps.compile(observable="sum_z")(mx.array([0.3] * 40)))
 ```
 
-More in [`examples/`](examples): VQA optimisation, barren plateaus, circuit cutting, noisy VQE.
+More in [`examples/`](https://github.com/sirius-quantum/zilver/tree/master/examples): VQA optimisation, barren plateaus, circuit cutting, noisy VQE.
 
 ## Execution paths
 
@@ -131,7 +131,7 @@ More in [`examples/`](examples): VQA optimisation, barren plateaus, circuit cutt
 
 | `method` | Runs on | Precision | Use it for |
 |---|---|---|---|
-| `"auto"` (default) | Picks `metal` if every gate is supported and precision is single; otherwise `accel` | as requested | Most work |
+| `"auto"` (default) | Picks `metal` if every gate is supported and precision is single; otherwise `accel` if `[accel]` is installed, else `mlx` | as requested | Most work |
 | `"metal"` | Hand-written Metal kernels for RY, RZ, RX, H, X, CNOT, CZ, RZZ and U3, combined into one graph by `mx.compile` | complex64 | One statevector at a time on Apple silicon |
 | `"accel"` | Multithreaded Numba CPU kernels; chooses between NumPy, compiled per-gate code and fused two-qubit blocks based on circuit size | complex64 or complex128 | Double precision; machines without a GPU. Needs `[accel]` |
 | `"mlx"` | The array layer: MLX on Apple silicon, PyTorch or NumPy elsewhere | complex64 | Batched sweeps with `vmap`; the AMD GPU path |
@@ -159,19 +159,33 @@ A single-precision statevector takes 8 × 2ⁿ bytes: 1 GiB at 27 qubits, 32 GiB
 
 ## Performance
 
-Single statevector, hardware-efficient ansatz at depth 2, on an Apple M1 Pro with 16 GB of unified memory. Wall time in milliseconds, best of four runs; lower is better.
+### Apple M1 Pro
+
+Single statevector, hardware-efficient ansatz at depth 2, on an Apple M1 Pro with 16 GB of unified memory. Wall time in milliseconds until the state is a NumPy array, best of ten runs; lower is better. Both simulators run in single precision (complex64); Zilver 0.6.2 with MLX 0.32.2, Qiskit Aer 0.17.2. The two final states agree to fidelity 1.0000000 at every width.
 
 | Qubits | Zilver (Metal) | Qiskit Aer |
 |-------:|---------------:|-----------:|
-|     12 |           1.45 |       1.50 |
-|     16 |           1.76 |       4.84 |
-|     20 |          19.93 |      40.84 |
-|     22 |          70.31 |     148.44 |
-|     24 |         334.63 |     588.61 |
+|     12 |           1.27 |       1.42 |
+|     16 |           2.73 |       5.86 |
+|     20 |          18.09 |      47.15 |
+|     22 |          81.32 |     208.43 |
+|     24 |         353.00 |     785.39 |
+|     26 |       1,586.14 |   3,085.96 |
 
 CNOT and CZ reproduce the ideal two-qubit process exactly on every backend. RZZ on the Metal path is within 3.4e-08 of ideal, which is the limit of float32. The `accel` path with `precision="double"` matches the ideal unitary to numerical zero.
 
-Reproduce the comparison with `python benchmarks/vs_qiskit_aer.py` (needs `[qiskit]`). The noise model is validated against real IBM and IQM hardware in [`benchmarks/`](benchmarks).
+Reproduce the table with `python benchmarks/statevector_vs_aer.py` (needs `[qiskit]`). The noise model is validated against real IBM and IQM hardware in [`benchmarks/`](https://github.com/sirius-quantum/zilver/tree/master/benchmarks).
+
+### AMD Radeon 8060S
+
+The circuit `python -m zilver.gpu` runs: a Hadamard and a Y-rotation on every qubit, then a CNOT chain, 95 gates at 32 qubits. Fused HIP kernel, complex64, on a Ryzen AI Max+ 395 with 128 GB of unified memory under native Windows ROCm. Measured 2026-09-17.
+
+| Qubits | State | End to end (s) | Gates alone (s) | Norm |
+|-------:|------:|---------------:|----------------:|:-----|
+|     31 | 17.18 GB | 2.74 | 0.28 | 0.9999993 |
+|     32 | 34.36 GB | 6.06 | 0.59 | 0.9999993 |
+
+End to end includes allocating the state on the device and copying it back to the host, which is most of the time at this width. The kernel updates the state in place, so 32 qubits fits in the 64 GiB the GPU can address. These times use support shrinking (`ZILVER_SHRINK=1`, on in `python -m zilver.gpu`). Its saving is a fixed warm-up, so it is largest on shallow circuits like this one; with it off, 32 qubits takes 12.69 s end to end. Correctness is checked against closed forms: the quantum Fourier transform of a basis state at every width from 20 to 32 qubits agrees to 2.7e-6 of the exact amplitude.
 
 ## The Zilver network
 
@@ -228,10 +242,12 @@ The node must be reachable from the internet; a Cloudflare Tunnel is the simples
 Other commands:
 
 ```bash
-zilver-node status      --registry URL   # network summary
-zilver-node nodes       --registry URL   # online nodes
-zilver-node dashboard   --registry URL   # live terminal view
+zilver-node status      # network summary
+zilver-node nodes       # online nodes
+zilver-node dashboard   # live terminal view
 ```
+
+They use the public registry unless you pass `--registry URL`.
 
 ## Status
 
@@ -239,7 +255,7 @@ Zilver is alpha software under active development. Public APIs and wire formats 
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](https://github.com/sirius-quantum/zilver/blob/master/CONTRIBUTING.md). For anything else, write to [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
+Issues and pull requests are welcome. See [CONTRIBUTING.md](https://github.com/sirius-quantum/zilver/blob/master/CONTRIBUTING.md) and the [Code of Conduct](https://github.com/sirius-quantum/zilver/blob/master/CODE_OF_CONDUCT.md). Report security problems privately, as described in [SECURITY.md](https://github.com/sirius-quantum/zilver/blob/master/SECURITY.md). For anything else, write to [dev@siriusquantum.com](mailto:dev@siriusquantum.com).
 
 ## License
 
