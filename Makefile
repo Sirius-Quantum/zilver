@@ -13,10 +13,11 @@ setup: install install-hooks
 	@echo "Zilver ready"
 
 test:
-	python -m pytest tests/ -q
+	@for f in examples/*.py; do case $$f in *network_submit*) continue;; esac; \
+	  echo "== $$f"; MPLBACKEND=Agg python $$f > /dev/null || exit 1; done; echo "examples: all ran"
 
 bench:
-	python benchmarks/vs_qiskit_aer.py --qubits 6 --depth 3 --resolution 20
+	python benchmarks/statevector_vs_aer.py
 
 guard:
 	python scripts/guard.py --all

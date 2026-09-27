@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
+try:
+    import httpx
+except ImportError as exc:
+    raise ImportError('the network client needs the network extra: pip install "zilver[network]"') from exc
 
 from .node import NodeCapabilities, SimJob, JobResult
 from .batch_distributor import BatchResult

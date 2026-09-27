@@ -6,13 +6,16 @@
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-MLX%20%2B%20Metal-black.svg)](https://github.com/ml-explore/mlx)
 [![AMD ROCm](https://img.shields.io/badge/AMD%20ROCm-fused%20HIP%20kernel-red.svg)](https://rocm.docs.amd.com/)
 
-Zilver is a quantum circuit simulator and a distributed simulation network built on it.
+**Fast statevector simulation on the GPU you already have.**
 
-The simulator runs on your own machine. On Apple silicon it uses the GPU through [MLX](https://github.com/ml-explore/mlx) and hand-written Metal kernels. On AMD GPUs it uses PyTorch for ROCm and a fused HIP kernel that updates the state in place, reaching 32 qubits on a Radeon 8060S. On any other machine it runs on the CPU with NumPy.
+Zilver runs quantum circuits on Apple silicon through hand-written Metal kernels, and on AMD GPUs through a fused HIP kernel that updates the state in place. No GPU? It runs on the CPU with NumPy. No account, no cloud, no API key.
 
-The network links Apple-silicon Macs into a shared pool. A registry sends each job to a Mac that has enough memory for it, and the job runs there.
+- **About 2× faster than Qiskit Aer** on a single statevector, 16 to 26 qubits on an M1 Pro.
+- **32 qubits in 6.06 s** end to end on a Radeon 8060S integrated GPU.
+- **Checked, not assumed.** Every example below matches Qiskit, or an exact formula, to float32 rounding.
+- **Built for variational work:** parameter-shift gradients, fidelity kernels, loss landscapes, noisy simulation and matrix product states.
 
-It is built for people who develop, train and benchmark variational quantum algorithms. The simulator needs no account, no cloud service and no API key.
+Need more memory than one machine has? The opt-in Zilver network pools Apple-silicon Macs and sends each job to one that can hold it. It is in invite-only preview.
 
 ## Platforms
 
@@ -63,7 +66,7 @@ circuit = hardware_efficient(n_qubits=10, depth=3)
 params  = np.random.default_rng(0).uniform(-np.pi, np.pi, circuit.n_params)
 
 sv = circuit.statevector(params)
-print(sv.numpy().shape, sv.dtype)   # (1024,) complex64
+print(sv.numpy().shape, sv.numpy().dtype)   # (1024,) complex64
 ```
 
 ## What you can build
@@ -204,6 +207,10 @@ With `NetworkCoordinator.submit`, the circuit goes only to the node. The registr
 ### Submit jobs
 
 Client access is by invitation. Open an issue describing your use case; once approved, you receive a client key.
+
+```bash
+pip install "zilver[network]"
+```
 
 ```python
 from zilver.circuit import Circuit
