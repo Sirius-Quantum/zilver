@@ -6,6 +6,8 @@
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-MLX%20%2B%20Metal-black.svg)](https://github.com/ml-explore/mlx)
 [![AMD ROCm](https://img.shields.io/badge/AMD%20ROCm-fused%20HIP%20kernel-red.svg)](https://rocm.docs.amd.com/)
 
+Zilver is a quantum circuit simulator and a distributed simulation network built on it.
+
 **Fast statevector simulation on the GPU you already have.**
 
 Zilver runs quantum circuits on Apple silicon through hand-written Metal kernels, and on AMD GPUs through a fused HIP kernel that updates the state in place. No GPU? It runs on the CPU with NumPy. No account, no cloud, no API key.
