@@ -24,6 +24,8 @@ changes the Apple silicon or CPU results.
 - The fused HIP kernel is specialised on the pass width at compile time.
 - `passes.count_passes()` and `passes.report()` price a circuit in memory passes
   before any kernel runs.
+- `zilver-node start` options for nodes that join a registry (`--tunnel`).
+- `zilver-node install-service` and `uninstall-service`.
 
 ### Changed
 - **Readback is chunked through a pinned buffer.** On an APU, device memory is

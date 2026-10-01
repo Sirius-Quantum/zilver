@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import signal
 import sys
@@ -201,8 +202,25 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
     scheme = "https" if ssl_cert else "http"
 
     # Construct the URL this node will advertise to the registry.
-    # --public-url takes precedence; otherwise fall back to detected LAN IP.
+    # --public-url takes precedence; then a tunnel, which is the default when
+    # joining a registry; otherwise the detected LAN IP.
     public_url = getattr(args, "public_url", None)
+    use_tunnel = getattr(args, "tunnel", None)
+    if use_tunnel is None:
+        use_tunnel = bool(args.registry) and not public_url
+    if args.host is None:
+        # Behind a tunnel nothing needs to reach the port except cloudflared.
+        args.host = "127.0.0.1" if use_tunnel else "0.0.0.0"
+    if use_tunnel and not public_url:
+        from .service import exit_with_tunnel, start_tunnel
+        try:
+            tunnel_proc, public_url = start_tunnel(args.port)
+        except RuntimeError as exc:
+            sys.exit(f"Could not open a tunnel: {exc}\n"
+                     "Pass --public-url <url> if this node is reachable another way.")
+        atexit.register(tunnel_proc.terminate)
+        exit_with_tunnel(tunnel_proc)
+        print(f"Tunnel: {public_url}")
     if public_url:
         node_url = public_url.rstrip("/")
     else:
@@ -314,6 +332,28 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
         execute_secret=reg_client.execute_secret if reg_client is not None else None,
         on_executed=on_executed,
     )
+
+
+def _cmd_node_service(args: argparse.Namespace) -> None:
+    """Install or remove the launchd agent that runs the node in the background."""
+    from . import service
+    if sys.platform != "darwin":
+        sys.exit("The background service uses macOS launchd; on Linux, run "
+                 "zilver-node start under systemd instead.")
+    if args.command == "uninstall-service":
+        removed = service.uninstall_service()
+        print("Background node stopped and removed." if removed
+              else "No background node was installed.")
+        return
+    start_args = ["--registry", args.registry, "--backends", args.backends,
+                  "--port", str(args.port)]
+    try:
+        path = service.install_service(start_args)
+    except Exception as exc:
+        sys.exit(f"Could not install the background node: {exc}")
+    print(f"Background node installed ({path}).")
+    print(f"It runs now and at every login. Log: {service.ZILVER_DIR / 'node.log'}")
+    print("Remove it with: zilver-node uninstall-service")
 
 
 def _cmd_node_status(args: argparse.Namespace) -> None:
@@ -599,8 +639,8 @@ def _build_node_parser() -> argparse.ArgumentParser:
         help="TCP port to listen on.",
     )
     grp_core.add_argument(
-        "--host", default="0.0.0.0",
-        help="Interface to bind.",
+        "--host", default=None,
+        help="Interface to bind (default: 127.0.0.1 behind a tunnel, else 0.0.0.0).",
     )
 
     grp_net = p_start.add_argument_group(
@@ -623,6 +663,12 @@ def _build_node_parser() -> argparse.ArgumentParser:
         help="This node's own registry key (never given to clients). "
              "If omitted, loaded from Keychain or obtained automatically on first run. "
              "Without --registry, a static key clients must send to /execute.",
+    )
+    grp_net.add_argument(
+        "--tunnel", action=argparse.BooleanOptionalAction, default=None,
+        help="Publish this node through a Cloudflare tunnel (needs cloudflared), "
+             "so it is reachable behind a home router without port forwarding. "
+             "Default: on with --registry unless --public-url is given.",
     )
     grp_net.add_argument(
         "--allow-unsigned", dest="allow_unsigned", action="store_true", default=False,
@@ -652,6 +698,23 @@ def _build_node_parser() -> argparse.ArgumentParser:
     )
 
     # --- nodes --------------------------------------------------------------
+    # --- install-service / uninstall-service --------------------------------
+    p_svc = sub.add_parser(
+        "install-service",
+        help="Run the node in the background: starts at login, restarts after "
+             "a crash, and keeps the Mac awake while it runs.",
+    )
+    p_svc.add_argument(
+        "--registry", default=PUBLIC_REGISTRY,
+        help=f"Registry server URL (default: {PUBLIC_REGISTRY}).",
+    )
+    p_svc.add_argument(
+        "--backends", default="sv",
+        help="Backends to enable: sv, dm, tn, or any comma-separated combination.",
+    )
+    p_svc.add_argument("--port", type=int, default=7700, help="TCP port to listen on.")
+    sub.add_parser("uninstall-service", help="Stop and remove the background node.")
+
     p_nodes = sub.add_parser("nodes", help="List online nodes in the registry.")
     p_nodes.add_argument(
         "--registry", default=PUBLIC_REGISTRY,
@@ -763,6 +826,9 @@ def main() -> None:
     }
     if args.command == "start":
         dispatch[args.command](args)
+        return
+    if args.command in ("install-service", "uninstall-service"):
+        _cmd_node_service(args)
         return
     try:
         import httpx
