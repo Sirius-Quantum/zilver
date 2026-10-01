@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
 from .node import Node, SimJob, JobResult
+from .node_types import check_execute_token
 
 # ---------------------------------------------------------------------------
 # Input size limits
@@ -24,7 +25,12 @@ _MAX_BODY_BYTES   = 2 * 1024 * 1024   # 2 MB — large enough for 10k ops + 10k 
 # App factory
 # ---------------------------------------------------------------------------
 
-def make_app(node: Node, api_key: str | None = None) -> FastAPI:
+def make_app(
+    node:           Node,
+    api_key:        str | None = None,
+    execute_secret: str | None = None,
+    on_executed:    Callable[[str, JobResult], None] | None = None,
+) -> FastAPI:
     """
     Build the FastAPI application for *node*.
 
@@ -37,10 +43,18 @@ def make_app(node: Node, api_key: str | None = None) -> FastAPI:
         ``jobs_completed`` counter (incremented atomically in CPython due to
         the GIL).
     api_key:
-        Bearer token required on ``POST /execute``.  When ``None`` (the
-        default) authentication is skipped — suitable for local development
-        and tests.  In production this should be the key issued by the
-        registry on node registration.
+        A static Bearer token the operator chose for ``POST /execute``, for a
+        node run without a registry.
+    execute_secret:
+        The secret this node sent the registry at registration. ``POST
+        /execute`` then accepts the short-lived execute tokens the registry
+        mints per match (see :func:`~zilver.node_types.issue_execute_token`).
+        When neither this nor ``api_key`` is set, authentication is skipped —
+        suitable for local development and tests.
+    on_executed:
+        Called as ``on_executed(job_token, result)`` off the request path after
+        a job that arrived with an execute token, so the node can report its
+        own work to the registry.
 
     Returns
     -------
@@ -61,19 +75,27 @@ def make_app(node: Node, api_key: str | None = None) -> FastAPI:
                 detail=f"Request body too large (limit {_MAX_BODY_BYTES // 1024} KB)",
             )
 
-    async def _require_auth(request: Request) -> None:
-        """Verify Bearer token.  No-op when api_key is None (test/dev mode)."""
-        if api_key is None:
-            return
+    async def _require_auth(request: Request) -> str | None:
+        """Verify the Bearer token and return its job_token, if it carries one.
+        No-op when neither api_key nor execute_secret is set (test/dev mode)."""
+        if api_key is None and execute_secret is None:
+            return None
         header = request.headers.get("Authorization", "")
         token = header[7:] if header.startswith("Bearer ") else ""
-        if not secrets.compare_digest(token, api_key):
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        if api_key is not None and secrets.compare_digest(token, api_key):
+            return None
+        if execute_secret is not None:
+            job_token = check_execute_token(execute_secret, node.caps.node_id, token)
+            if job_token is not None:
+                return job_token
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
     # --- Routes -------------------------------------------------------------
 
-    @app.post("/execute", dependencies=[Depends(_check_body_size), Depends(_require_auth)])
-    async def execute(body: dict[str, Any]) -> dict[str, Any]:
+    @app.post("/execute", dependencies=[Depends(_check_body_size)])
+    async def execute(
+        body: dict[str, Any], job_token: str | None = Depends(_require_auth),
+    ) -> dict[str, Any]:
         """
         Execute a simulation job on this node.
 
@@ -126,6 +148,8 @@ def make_app(node: Node, api_key: str | None = None) -> FastAPI:
             # node.execute raises ValueError for backend/capacity mismatches
             raise HTTPException(status_code=422, detail=str(exc))
 
+        if on_executed is not None and job_token:
+            loop.run_in_executor(None, on_executed, job_token, result)
         return result.to_dict()
 
     @app.get("/caps")
@@ -176,6 +200,8 @@ def serve(
     api_key:      str | None = None,
     ssl_keyfile:  str | None = None,
     ssl_certfile: str | None = None,
+    execute_secret: str | None = None,
+    on_executed:  Callable[[str, JobResult], None] | None = None,
 ) -> None:
     """
     Start a uvicorn HTTP(S) server for *node* and block until interrupted.
@@ -195,15 +221,16 @@ def serve(
     log_level:
         uvicorn log level (``"debug"``, ``"info"``, ``"warning"``, etc.).
         Default is ``"warning"`` to keep stdout clean in production.
-    api_key:
-        Bearer token required on ``POST /execute``.  ``None`` disables auth.
+    api_key, execute_secret, on_executed:
+        See :func:`make_app`.
     ssl_keyfile:
         Path to the TLS private key (PEM).  When set, the server uses HTTPS.
     ssl_certfile:
         Path to the TLS certificate (PEM).
     """
     import uvicorn
-    app = make_app(node, api_key=api_key)
+    app = make_app(node, api_key=api_key, execute_secret=execute_secret,
+                   on_executed=on_executed)
     uvicorn.run(
         app,
         host=host,

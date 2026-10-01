@@ -15,7 +15,6 @@ from .node_types import (
     estimate_memory_bytes,
     _available_memory_bytes,
     _compute_proof,
-    _compute_proof_v2,
     _sv_qubit_ceiling,   # noqa: F401  (re-exported for tests and external callers)
     _dm_qubit_ceiling,   # noqa: F401
     _detect_chip,        # noqa: F401
@@ -38,59 +37,83 @@ __all__ = [
 # Circuit reconstruction from ops list
 # ---------------------------------------------------------------------------
 
-def _build_circuit_from_ops(ops: list[dict], n_qubits: int, n_params: int):
-    """
-    Reconstruct a Circuit from a serialized ops list.
+# kind -> (qubit count, param-index count). Every builder (Circuit,
+# NoisyCircuit, MPSCircuit) takes the gate as method(*qubits, *param_indices).
+_GATE_SIGNATURES: dict[str, tuple[int, int]] = {
+    "h": (1, 0), "x": (1, 0),
+    "rx": (1, 1), "ry": (1, 1), "rz": (1, 1), "u3": (1, 3),
+    "cnot": (2, 0), "cz": (2, 0), "rzz": (2, 1),
+    "toffoli": (3, 0), "fredkin": (3, 0),
+}
 
-    Supports both the current format (``param_indices`` list) and the legacy
-    format (``param_idx`` single value) for backward compatibility.
+
+def _replay_ops(target, ops: list[dict], n_qubits: int, n_params: int):
     """
-    from .circuit import Circuit
-    c = Circuit(n_qubits)
-    c.n_params = n_params
+    Replay serialized ops onto a circuit builder and return it.
+
+    All backends go through this one table, so a gate the backend cannot run
+    raises ValueError instead of being skipped. Accepts the current
+    ``param_indices`` list and the legacy single ``param_idx``.
+    """
     for op in ops:
-        kind   = op["type"]
-        qubits = op["qubits"]
-
-        # Resolve parameter indices — support both serialization formats
-        raw_indices = op.get("param_indices")
-        if raw_indices is not None:
-            param_indices = raw_indices
-        else:
+        kind   = op.get("type")
+        qubits = list(op.get("qubits") or [])
+        param_indices = op.get("param_indices")
+        if param_indices is None:
             legacy = op.get("param_idx")
-            param_indices = [legacy] if legacy is not None else []
-        pidx = param_indices[0] if param_indices else None
+            param_indices = [] if legacy is None else [legacy]
 
-        if kind == "h":
-            c.h(qubits[0])
-        elif kind == "x":
-            c.x(qubits[0])
-        elif kind == "ry":
-            c.ry(qubits[0], pidx)
-        elif kind == "rx":
-            c.rx(qubits[0], pidx)
-        elif kind == "rz":
-            c.rz(qubits[0], pidx)
-        elif kind == "cnot":
-            c.cnot(qubits[0], qubits[1])
-        elif kind == "cz":
-            c.cz(qubits[0], qubits[1])
-        elif kind == "rzz":
-            c.rzz(qubits[0], qubits[1], pidx)
-        elif kind == "u3":
-            if len(param_indices) < 3:
-                raise ValueError(
-                    "u3 gate requires 3 param_indices (theta, phi, lambda); "
-                    f"got {param_indices!r}"
-                )
-            c.u3(qubits[0], param_indices[0], param_indices[1], param_indices[2])
-        elif kind == "toffoli":
-            c.toffoli(qubits[0], qubits[1], qubits[2])
-        elif kind == "fredkin":
-            c.fredkin(qubits[0], qubits[1], qubits[2])
-        else:
+        signature = _GATE_SIGNATURES.get(kind)
+        if signature is None:
             raise ValueError(f"Unknown gate type in job ops: {kind!r}")
-    return c
+        if (len(qubits), len(param_indices)) != signature:
+            raise ValueError(
+                f"{kind} takes {signature[0]} qubit(s) and {signature[1]} "
+                f"param index(es); got qubits={qubits!r} "
+                f"param_indices={param_indices!r}"
+            )
+        if len(set(qubits)) != len(qubits) or not all(
+            type(q) is int and 0 <= q < n_qubits for q in qubits
+        ):
+            raise ValueError(f"{kind}: bad qubits {qubits!r} for n_qubits={n_qubits}")
+        if not all(type(p) is int and 0 <= p < n_params for p in param_indices):
+            raise ValueError(
+                f"{kind}: bad param_indices {param_indices!r} for n_params={n_params}"
+            )
+
+        builder = getattr(target, kind, None)
+        if builder is None:
+            raise ValueError(f"{type(target).__name__} does not support gate {kind!r}")
+        builder(*qubits, *param_indices)
+
+    target.n_params = n_params
+    return target
+
+
+def _build_circuit_from_ops(ops: list[dict], n_qubits: int, n_params: int):
+    """Reconstruct a statevector Circuit from a serialized ops list."""
+    from .circuit import Circuit
+    return _replay_ops(Circuit(n_qubits), ops, n_qubits, n_params)
+
+
+def _noise_model_from_dict(spec: dict | None):
+    """Build a NoiseModel from SimJob.noise, or None for a noiseless run."""
+    if not spec:
+        return None
+    from .density_matrix import NoiseModel
+    if not isinstance(spec, dict) or len(spec) != 1:
+        raise ValueError(f"noise must name exactly one model; got {spec!r}")
+    (name, kwargs), = spec.items()
+    factory = {"depolarizing": NoiseModel.depolarizing,
+               "thermal_relaxation": NoiseModel.thermal_relaxation}.get(name)
+    if factory is None or not isinstance(kwargs, dict):
+        raise ValueError(
+            f"unknown noise model {name!r}; use 'depolarizing' or 'thermal_relaxation'"
+        )
+    try:
+        return factory(**kwargs)
+    except TypeError as exc:
+        raise ValueError(f"bad arguments for noise model {name!r}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -220,34 +243,21 @@ class Node:
 
         self.caps.jobs_completed += 1
 
-        expectation = result_data.get("expectation", 0.0)
-
-        # Compute proof — use v2 format for non-expectation result types
-        result_type = getattr(job, "result_type", "expectation")
-        if result_type == "expectation":
-            proof = _compute_proof(job.job_id, job.params, expectation)
-        elif result_type == "samples":
-            samples = result_data.get("samples") or []
-            proof = _compute_proof_v2(
-                job.job_id, job.params, "samples", {"samples": sorted(samples)}
-            )
-        elif result_type == "statevector":
-            import json as _json
-            sv = result_data.get("statevector") or []
-            sv_bytes = _json.dumps(sv, sort_keys=True).encode()
-            import hashlib as _hashlib
-            sv_hash = _hashlib.sha256(sv_bytes).hexdigest()
-            proof = _compute_proof_v2(
-                job.job_id, job.params, "statevector", {"statevector_sha256": sv_hash}
-            )
-        elif result_type == "pauli":
-            pe = result_data.get("pauli_expectations") or {}
-            proof = _compute_proof_v2(
-                job.job_id, job.params, "pauli",
-                {k: round(v, 8) for k, v in sorted(pe.items())}
-            )
-        else:
-            proof = _compute_proof(job.job_id, job.params, expectation)
+        result = JobResult(
+            expectation        = result_data.get("expectation", 0.0),
+            job_id             = job.job_id,
+            node_id            = self.caps.node_id,
+            elapsed_ms         = elapsed_ms,
+            proof              = "",
+            memory_used_mb     = memory_used_mb,
+            samples            = result_data.get("samples"),
+            sample_counts      = result_data.get("sample_counts"),
+            statevector        = result_data.get("statevector"),
+            pauli_expectations = result_data.get("pauli_expectations"),
+        )
+        # The proof binds the result to the whole job (circuit included), and
+        # the signature below covers the proof.
+        result.proof = _compute_proof(job, result)
 
         # Sign the proof. Reaching here without a key means the node was started
         # with allow_unsigned=True, so that is a declared state rather than an
@@ -270,29 +280,23 @@ class Node:
                     "unavailable, so the result cannot be signed; refusing to "
                     "return it unsigned"
                 ) from exc
-            node_signature = sign_result(proof, private_key_bytes, se_label)
+            node_signature = sign_result(result.proof, private_key_bytes, se_label)
             node_pubkey    = public_key_bytes.hex()
 
-        return JobResult(
-            expectation        = expectation,
-            job_id             = job.job_id,
-            node_id            = self.caps.node_id,
-            elapsed_ms         = elapsed_ms,
-            proof              = proof,
-            memory_used_mb     = memory_used_mb,
-            node_signature     = node_signature,
-            node_pubkey        = node_pubkey,
-            samples            = result_data.get("samples"),
-            sample_counts      = result_data.get("sample_counts"),
-            statevector        = result_data.get("statevector"),
-            pauli_expectations = result_data.get("pauli_expectations"),
-        )
+        result.node_signature = node_signature
+        result.node_pubkey    = node_pubkey
+        return result
 
     def _run_typed(self, job: SimJob) -> dict:
         """Execute job and return a result dict covering all result_type variants."""
         result_type = getattr(job, "result_type", "expectation")
         params_mx   = mx.array(np.array(job.params, dtype=np.float32))
 
+        if result_type != "expectation" and job.backend != "sv":
+            raise ValueError(
+                f"result_type={result_type!r} runs on the statevector; "
+                f"backend={job.backend!r} supports only 'expectation'"
+            )
         if result_type == "samples":
             return self._run_samples(job, params_mx)
         if result_type == "statevector":
@@ -313,15 +317,17 @@ class Node:
         probs = np.abs(probs)
         probs /= probs.sum()  # renormalize for numerical safety
         n = job.n_qubits
-        indices   = np.random.choice(len(probs), size=shots, p=probs)
+        # Seeded by the job, so any honest node returns the same shots.
+        rng       = np.random.default_rng(int(job.digest()[:16], 16))
+        indices   = rng.choice(len(probs), size=shots, p=probs)
         bitstrings = [format(int(idx), f"0{n}b") for idx in indices]
         counts: dict[str, int] = {}
         for s in bitstrings:
             counts[s] = counts.get(s, 0) + 1
-        # Expectation from sample mean of Z eigenvalues
-        expval = float(
-            sum((-1) ** b.count("1") / n * v for b, v in counts.items()) / shots
-        ) if n > 0 else 0.0
+        # <Z_q> per shot is 1 - 2*bit_q, qubit 0 = MSB; same observables as _run_statevector
+        qubits = range(n) if job.observable == "sum_z" else range(min(n, 1))
+        z = [1.0 - 2.0 * ((indices >> (n - 1 - q)) & 1) for q in qubits]
+        expval = float(np.sum(z, axis=0).mean()) if z else 0.0
         return {"samples": bitstrings, "sample_counts": counts, "expectation": expval}
 
     def _run_statevector(self, job: SimJob, params: mx.array) -> dict:
@@ -364,50 +370,31 @@ class Node:
     def _run(self, job: SimJob) -> float:
         params = mx.array(np.array(job.params, dtype=np.float32))
 
-        if job.backend in ("sv", "tn"):
+        if job.backend == "sv":
             return self._run_sv(job, params)
         elif job.backend == "dm":
             return self._run_dm(job, params)
+        elif job.backend == "tn":
+            return self._run_tn(job, params)
         else:
             raise ValueError(f"Unknown backend: {job.backend!r}")
 
     def _run_sv(self, job: SimJob, params: mx.array) -> float:
-        if job.backend == "tn":
-            return self._run_tn(job, params)
         circuit = _build_circuit_from_ops(job.circuit_ops, job.n_qubits, job.n_params)
         return float(circuit.compile(job.observable)(params).item())
 
     def _run_dm(self, job: SimJob, params: mx.array) -> float:
-        circuit = _build_circuit_from_ops(job.circuit_ops, job.n_qubits, job.n_params)
-        # Re-use the sv circuit execution path; DM with no noise = sv
-        return float(circuit.compile(job.observable)(params).item())
+        from .density_matrix import NoisyCircuit
+        circuit = _replay_ops(NoisyCircuit(job.n_qubits), job.circuit_ops,
+                              job.n_qubits, job.n_params)
+        noise_model = _noise_model_from_dict(job.noise)
+        return float(circuit.compile(job.observable, noise_model=noise_model)(params).item())
 
     def _run_tn(self, job: SimJob, params: mx.array) -> float:
-        from .tensor_network import MPSCircuit, expectation_sum_z_mps, expectation_z_mps
-        c = MPSCircuit(job.n_qubits, chi_max=64)
-        for op in job.circuit_ops:
-            kind   = op["type"]
-            qubits = op["qubits"]
-            pidx   = op.get("param_idx")
-            if kind == "h":
-                c.h(qubits[0])
-            elif kind == "x":
-                c.x(qubits[0])
-            elif kind == "ry":
-                c.ry(qubits[0], pidx)
-            elif kind == "rx":
-                c.rx(qubits[0], pidx)
-            elif kind == "rz":
-                c.rz(qubits[0], pidx)
-            elif kind == "cnot":
-                c.cnot(qubits[0], qubits[1])
-            elif kind == "rzz":
-                c.rzz(qubits[0], qubits[1], pidx)
-        tensors = c._run(params)
-        n = job.n_qubits
-        if job.observable == "sum_z":
-            return expectation_sum_z_mps(tensors, n)
-        return expectation_z_mps(tensors, 0, n)
+        from .tensor_network import MPSCircuit
+        circuit = _replay_ops(MPSCircuit(job.n_qubits, chi_max=64), job.circuit_ops,
+                              job.n_qubits, job.n_params)
+        return float(circuit.compile(job.observable)(params))
 
     def __repr__(self) -> str:
         return (

@@ -295,10 +295,10 @@ def apply_2q_general(state: np.ndarray, G: np.ndarray,
     _apply_2q_with_bases(state, G64, bases, mask_a, mask_b)
 
 
-# Note: a generic k-qubit applier for k ≥ 3 is not provided in v0.4.0.
 # Fusion is capped at 2 qubits, which captures the bulk of the win for
 # nearest-neighbour entangled ansätze (hardware_efficient, real_amplitudes,
-# qaoa_style). A k=3..5 path will land in a follow-up.
+# qaoa_style). Native gates on 3+ qubits go through
+# _apply_kq_numpy_strided, one tensor contraction per gate.
 
 
 # ----------------------------------------------------------------------------
@@ -508,10 +508,7 @@ def run_circuit(circuit, params: np.ndarray, fuse_max: int = 2) -> np.ndarray:
         elif k == 2:
             apply_2q_general(state, U, qs[0], qs[1], n)
         else:
-            raise NotImplementedError(
-                f"k-qubit fused block (k={k}) is reserved for v0.4.x. "
-                "Pass fuse_max=1 to bypass fusion."
-            )
+            _apply_kq_numpy_strided(state, U, qs, n)
     return state
 
 
@@ -550,7 +547,7 @@ def _apply_single_op(state: np.ndarray, op, params: np.ndarray, n: int) -> None:
     elif len(qs) == 2:
         apply_2q_general(state, G, qs[0], qs[1], n)
     else:
-        apply_kq_general(state, G, np.array(qs, dtype=np.int64), n)
+        _apply_kq_numpy_strided(state, G, qs, n)
 
 
 # ----------------------------------------------------------------------------
@@ -911,6 +908,23 @@ def _apply_2q_numpy_strided(state: np.ndarray, M: np.ndarray, qa: int, qb: int, 
     return state
 
 
+def _apply_kq_numpy_strided(state: np.ndarray, M: np.ndarray, qubits, n: int) -> np.ndarray:
+    """In-place k-qubit gate (k ≥ 3: Toffoli, Fredkin, custom unitaries).
+
+    Viewed as a ``(2,)*n`` tensor, axis ``q`` is qubit ``q`` (qubit 0 = MSB), so
+    the gate is one contraction of its input axes against the target axes. The
+    gate's output axes come out in front and are moved back to the target
+    positions while copying into the original buffer. Peak scratch is one
+    state, as in the 2q path, and it works for any dtype.
+    """
+    k = len(qubits)
+    v = state.reshape((2,) * n)
+    G = np.asarray(M, dtype=state.dtype).reshape((2,) * (2 * k))
+    out = np.tensordot(G, v, axes=(list(range(k, 2 * k)), list(qubits)))
+    np.copyto(v, np.moveaxis(out, list(range(k)), list(qubits)))
+    return state
+
+
 def run_circuit_strided(circuit, params: np.ndarray, dtype=np.complex64) -> np.ndarray:
     """Execute a Circuit via the pure-NumPy strided path (no numba, no MLX).
 
@@ -941,9 +955,7 @@ def run_circuit_strided(circuit, params: np.ndarray, dtype=np.complex64) -> np.n
         elif len(op.qubits) == 2:
             state = _apply_2q_numpy_strided(state, M, op.qubits[0], op.qubits[1], n)
         else:
-            raise NotImplementedError(
-                f"strided path supports only 1q/2q gates; got {len(op.qubits)}-qubit op"
-            )
+            state = _apply_kq_numpy_strided(state, M, op.qubits, n)
     return state
 
 

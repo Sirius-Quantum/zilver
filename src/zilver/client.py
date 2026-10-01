@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
 try:
@@ -186,6 +187,9 @@ class RegistryClient:
         self.api_key = api_key
         self._client = httpx.Client(timeout=timeout)
         self.last_api_key: str | None = None
+        # Sent on every register() from this client, so a re-registration
+        # keeps the secret the running node server checks tokens against.
+        self.execute_secret = secrets.token_hex(32)
 
     def _auth_headers(self) -> dict[str, str]:
         key = getattr(self, "api_key", None)
@@ -233,7 +237,8 @@ class RegistryClient:
         httpx.HTTPStatusError
             On 4xx / 5xx responses.
         """
-        body: dict = {"caps": caps.to_dict(), "url": node_url}
+        body: dict = {"caps": caps.to_dict(), "url": node_url,
+                      "execute_secret": self.execute_secret}
 
         try:
             from . import _client_ops
@@ -298,13 +303,17 @@ class RegistryClient:
         backend:   str,
         n_qubits:  int,
         min_stake: int = 0,
+        node_id:   str | None = None,
     ) -> dict[str, Any] | None:
-        """Return the full match response dict (with node_id and url), or None."""
+        """Return the full match response dict (node_id, url, execute_token),
+        or None. With *node_id*, match only that node."""
         params: dict[str, Any] = {
             "backend": backend,
             "n_qubits": n_qubits,
             "min_stake": min_stake,
         }
+        if node_id is not None:
+            params["node_id"] = node_id
         resp = self._client.get(f"{self.url}/match", params=params,
                                 headers=self._auth_headers())
         if resp.status_code == 404:
@@ -348,7 +357,8 @@ class RegistryClient:
         job_token:      str = "",
     ) -> dict[str, Any]:
         """
-        Report a completed job to the registry.
+        Report a completed job to the registry. Called by the node that ran
+        it, with this client's ``api_key`` set to the node's own key.
 
         Parameters
         ----------
@@ -361,8 +371,7 @@ class RegistryClient:
         proof:
             SHA-256 hex digest from :class:`~zilver.node.JobResult`.
         job_token:
-            Single-use token returned by ``GET /match``.  Required when the
-            registry enforces contribution authorisation.
+            Single-use token from ``GET /match``, carried in the execute token.
 
         Returns
         -------
@@ -391,7 +400,7 @@ class RegistryClient:
         -------
         list[dict]
             Each element is a ``NodeCapabilities.to_dict()`` extended with
-            a ``"url"`` field and ``"node_execute_key"`` field.
+            a ``"url"`` field.
         """
         resp = self._client.get(f"{self.url}/nodes", headers=self._auth_headers())
         resp.raise_for_status()
@@ -512,24 +521,11 @@ class NetworkCoordinator:
                 f"No eligible node for backend={job.backend!r} "
                 f"n_qubits={job.n_qubits}"
             )
-        node_url         = entry.get("url", "")
-        node_id          = entry.get("node_id", "")
-        job_token        = entry.get("job_token", "")
-        node_execute_key = entry.get("node_execute_key") or self.api_key
-        with NodeClient(node_url, timeout=self.timeout, api_key=node_execute_key) as node_client:
-            result = node_client.execute(job)
-        # Best-effort contribution report — non-fatal if registry is unreachable
-        try:
-            self._registry.contribute(
-                node_id=node_id,
-                elapsed_ms=result.elapsed_ms,
-                memory_used_mb=result.memory_used_mb,
-                proof=result.proof,
-                job_token=job_token,
-            )
-        except Exception as exc:
-            _log.warning("contribute() failed for node %s: %s", node_id, exc)
-        return result
+        # The node reports its own work to the registry; the client does not.
+        execute_token = entry.get("execute_token") or self.api_key
+        with NodeClient(entry.get("url", ""), timeout=self.timeout,
+                        api_key=execute_token) as node_client:
+            return node_client.execute(job)
 
     def submit_batch(
         self,

@@ -9,9 +9,12 @@ registry import only this module.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import platform
+import re
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass, field, asdict
 
@@ -51,25 +54,43 @@ def estimate_memory_bytes(n_qubits: int, backend: str, chi_max: int = 64) -> int
     return 8 * (2 ** n_qubits)
 
 
+def _meminfo_bytes(key: str) -> int | None:
+    """Read one ``/proc/meminfo`` field (Linux), in bytes. None elsewhere."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith(key + ":"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def _available_memory_bytes() -> int:
     """
-    Return immediately available system memory in bytes (macOS).
+    Return memory a new job can use without swapping, in bytes.
 
-    Uses ``sysctl vm.page_free_count`` and ``hw.pagesize``.
+    Linux: ``MemAvailable``. macOS: free + inactive + speculative + purgeable
+    pages from ``vm_stat``, which the kernel hands out on demand. Free pages
+    alone read 0.08 GB on an idle 16 GB M1 Pro.
     Falls back to 8 GB on failure so callers never hard-block on errors.
     """
+    available = _meminfo_bytes("MemAvailable")
+    if available is not None:
+        return available
     try:
-        page_size = int(subprocess.check_output(
-            ["sysctl", "-n", "hw.pagesize"],
-            stderr=subprocess.DEVNULL, timeout=2,
-        ).decode().strip())
-        free_pages = int(subprocess.check_output(
-            ["sysctl", "-n", "vm.page_free_count"],
-            stderr=subprocess.DEVNULL, timeout=2,
-        ).decode().strip())
-        return page_size * free_pages
+        out = subprocess.check_output(
+            ["vm_stat"], stderr=subprocess.DEVNULL, timeout=2,
+        ).decode()
+        page_size = int(re.search(r"page size of (\d+) bytes", out).group(1))
+        pages = re.findall(
+            r"^Pages (?:free|inactive|speculative|purgeable):\s+(\d+)\.", out, re.M,
+        )
+        if pages:
+            return page_size * sum(int(p) for p in pages)
     except Exception:
-        return 8 * (1024 ** 3)  # 8 GB fallback
+        pass
+    return 8 * (1024 ** 3)  # 8 GB fallback
 
 
 def _detect_hardware_uuid() -> str | None:
@@ -121,7 +142,11 @@ def _detect_ram_gb() -> int:
         ).decode().strip()
         return int(out) // (1024 ** 3)
     except Exception:
-        return 8   # conservative fallback
+        pass
+    total = _meminfo_bytes("MemTotal")
+    if total is not None:
+        return total // (1024 ** 3)
+    return 8   # conservative fallback
 
 
 def _sv_qubit_ceiling(ram_gb: int) -> int:
@@ -221,6 +246,10 @@ class SimJob:
     result_type: "expectation" | "samples" | "statevector" | "pauli"
     shots:       number of measurement shots (for result_type="samples")
     hamiltonian: list of {"coeff": float, "pauli": str} dicts (for result_type="pauli")
+    noise:       noise model for backend="dm", e.g.
+                 {"depolarizing": {"p1": 0.001, "p2": 0.01}} or
+                 {"thermal_relaxation": {"t1": ..., "t2": ..., "gate_time_1q": ...}};
+                 None runs the density matrix noiselessly
     """
     circuit_ops: list[dict]
     n_qubits:    int
@@ -232,9 +261,15 @@ class SimJob:
     result_type: str              = "expectation"
     shots:       int | None       = None
     hamiltonian: list[dict] | None = None
+    noise:       dict | None       = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def digest(self) -> str:
+        """SHA-256 over every field that determines the answer, the circuit included."""
+        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
 
     @classmethod
     def from_dict(cls, d: dict) -> "SimJob":
@@ -251,7 +286,7 @@ class JobResult:
     job_id:             matches SimJob.job_id
     node_id:            identity of the executing node
     elapsed_ms:         wall-clock execution time
-    proof:              SHA-256 of (job_id + params + primary_result)
+    proof:              SHA-256 of (SimJob.digest() + primary result), see _compute_proof
     node_signature:     hex signature over proof
     node_pubkey:        hex public key — enables offline verification
     samples:            measurement bitstrings (result_type="samples")
@@ -279,8 +314,14 @@ class JobResult:
         return asdict(self)
 
     def verify(self, job: SimJob) -> bool:
-        """Recompute and check the proof hash (expectation-type proof)."""
-        return self.proof == _compute_proof(job.job_id, job.params, self.expectation)
+        """Check that the proof binds this result to exactly this job.
+
+        A consistency check, not a correctness check: it fails if the circuit,
+        params, backend or result were changed after the node produced the
+        proof, but a node can still compute a wrong answer and prove it. The
+        signature (:meth:`verify_signature`) covers the same proof.
+        """
+        return self.proof == _compute_proof(job, self)
 
     def verify_signature(self) -> bool:
         """Verify the node's cryptographic signature over the proof.
@@ -292,18 +333,26 @@ class JobResult:
         return verify_result_signature(self.proof, self.node_pubkey, self.node_signature)
 
 
-def _compute_proof(job_id: str, params: list[float], expectation: float) -> str:
-    """Compute a SHA-256 proof for a job result.
+def _compute_proof(job: SimJob, result: JobResult) -> str:
+    """SHA-256 over the job digest and the primary result for its result_type.
 
-    Serialises job_id, params, and expectation (rounded to 8 d.p.) as a
-    deterministic JSON string and returns its hex digest. Used by
-    JobResult.verify() to confirm the node computed the correct result.
+    The node computes this before signing and :meth:`JobResult.verify`
+    recomputes it, so both sides go through this one function.
     """
-    payload = json.dumps({
-        "job_id":     job_id,
-        "params":     params,
-        "expectation": round(expectation, 8),
-    }, sort_keys=True)
+    primary: dict = {"expectation": round(result.expectation, 8)}
+    if job.result_type == "samples":
+        primary["samples"] = sorted(result.samples or [])
+    elif job.result_type == "statevector":
+        sv_bytes = json.dumps(result.statevector or [], sort_keys=True).encode()
+        primary["statevector_sha256"] = hashlib.sha256(sv_bytes).hexdigest()
+    elif job.result_type == "pauli":
+        primary["pauli"] = {
+            k: round(v, 8) for k, v in sorted((result.pauli_expectations or {}).items())
+        }
+    payload = json.dumps(
+        {"job": job.digest(), "result_type": job.result_type, **primary},
+        sort_keys=True,
+    )
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -353,30 +402,44 @@ def verify_result_signature(
     return False
 
 
-def _compute_proof_v2(
-    job_id: str,
-    params: list[float],
-    result_type: str,
-    primary: dict,
-) -> str:
-    """Extended proof covering non-expectation result types.
+# ---------------------------------------------------------------------------
+# Execute tokens
+# ---------------------------------------------------------------------------
+# A node sends the registry a random execute secret at registration, and the
+# registry never returns it. For each match the registry hands the client a
+# token that lets it call POST /execute on that one node until it expires:
+#
+#     "<job_token>.<exp>.<hmac_sha256(secret, node_id.job_token.exp)>"
+#
+# The node checks the MAC with the same secret and reports the job_token back
+# with its own contribution, so a client never holds a node's credential.
 
-    Parameters
-    ----------
-    job_id:
-        Job identifier.
-    params:
-        Circuit parameter vector.
-    result_type:
-        One of ``"samples"``, ``"statevector"``, or ``"pauli"``.
-    primary:
-        Dict holding the primary result data to include in the proof.
-        For samples: ``{"samples": sorted_list}``.
-        For statevector: ``{"statevector_sha256": hex_digest}``.
-        For pauli: ``{pauli_str: round(val, 8), …}``.
-    """
-    payload = json.dumps(
-        {"job_id": job_id, "params": params, "result_type": result_type, **primary},
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
+EXECUTE_TOKEN_TTL = 600.0
+
+
+def _execute_mac(secret: str, node_id: str, job_token: str, exp: int) -> str:
+    return hmac.new(
+        secret.encode(), f"{node_id}.{job_token}.{exp}".encode(), hashlib.sha256,
+    ).hexdigest()
+
+
+def issue_execute_token(
+    secret: str, node_id: str, job_token: str, ttl: float = EXECUTE_TOKEN_TTL,
+) -> str:
+    """Mint a token for POST /execute on *node_id*, valid for *ttl* seconds."""
+    exp = int(time.time() + ttl)
+    return f"{job_token}.{exp}.{_execute_mac(secret, node_id, job_token, exp)}"
+
+
+def check_execute_token(secret: str, node_id: str, token: str) -> str | None:
+    """Return the token's job_token if it is valid and unexpired, else None."""
+    try:
+        job_token, exp_str, mac = token.split(".")
+        exp = int(exp_str)
+    except ValueError:
+        return None
+    if exp < time.time():
+        return None
+    if not hmac.compare_digest(mac, _execute_mac(secret, node_id, job_token, exp)):
+        return None
+    return job_token

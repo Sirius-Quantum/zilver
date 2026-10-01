@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import secrets
 import time
 import uuid
@@ -15,7 +16,7 @@ from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
-from .node_types import NodeCapabilities
+from .node_types import NodeCapabilities, issue_execute_token
 from .registry import Registry
 
 try:
@@ -43,17 +44,28 @@ _JOB_TOKEN_TTL     = 3600.0
 
 
 def _is_private_url(url: str) -> bool:
-    """Return True if *url* resolves to a private/loopback/link-local address."""
+    """Return True unless every address *url*'s host resolves to is public.
+
+    Hostnames are resolved, so a public DNS name that points at 10.x or at
+    169.254.169.254 is refused, and so is a host that does not resolve. The
+    registry resolves the name again when it calls the node, so this does not
+    stop DNS rebinding; the instance must enforce IMDSv2 as well.
+    """
     import ipaddress
+    import socket
     import urllib.parse
     try:
         host = urllib.parse.urlparse(url).hostname or ""
-        if host in ("localhost",):
+        infos = socket.getaddrinfo(host, None) if host else []
+    except (ValueError, UnicodeError, OSError):
+        return True
+    if not infos:
+        return True
+    for *_, sockaddr in infos:
+        addr = ipaddress.ip_address(str(sockaddr[0]).split("%")[0])
+        if not addr.is_global or addr.is_multicast:
             return True
-        addr = ipaddress.ip_address(host)
-        return addr.is_private or addr.is_loopback or addr.is_link_local
-    except ValueError:
-        return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -162,15 +174,20 @@ def make_registry_app(
 
     # Maps node_id → advertised URL so clients can connect directly.
     node_urls:      dict[str, str] = {}
-    # Maps node_id → issued API key for identity verification.
+    # Maps node_id → the node's own key: heartbeat, contribute, re-register.
+    # Never returned to anyone but that node.
     node_keys:      dict[str, str] = {}
+    # Maps node_id → the secret the node sent at registration. The registry
+    # signs execute tokens with it; it is never returned to anyone.
+    node_execute_secrets: dict[str, str] = {}
     # Maps node_id → registered public key (hex).
     node_pubkeys:   dict[str, str] = {}
     # Maps pubkey_hex → node_id — enforces one slot per keypair.
     pubkey_node_ids: dict[str, str] = {}
     # Maps job_token → (node_id, client_key, issued_at).
     # client_key is "" when client_keys auth is disabled.
-    # Tokens are deleted on first use or when they exceed _JOB_TOKEN_TTL.
+    # Tokens are deleted on first use, and by the 60 s loop once they exceed
+    # _JOB_TOKEN_TTL.
     job_tokens:     dict[str, tuple[str, str, float]] = {}
 
     # Async job queue: job_id → {"status", "result"?, "error"?}
@@ -181,8 +198,8 @@ def make_registry_app(
     # Restore persisted state from DB (online nodes only).
     if _store is not None:
         for _row in _store.load_all():
-            if not _row.get("online", 1):
-                continue
+            if not _row.get("online", 1) or not _row.get("execute_secret"):
+                continue   # a row without a secret re-registers on its next heartbeat
             try:
                 _caps = NodeCapabilities(**json.loads(_row["caps_json"]))
             except Exception:
@@ -190,6 +207,7 @@ def make_registry_app(
             reg.register(_caps)
             node_urls[_row["node_id"]] = _row["url"]
             node_keys[_row["node_id"]] = _row["api_key"]
+            node_execute_secrets[_row["node_id"]] = _row["execute_secret"]
             _pk = _row.get("pubkey_hex", "")
             if _pk:
                 node_pubkeys[_row["node_id"]] = _pk
@@ -216,9 +234,13 @@ def make_registry_app(
 
     # --- Canary check coroutine ----------------------------------------------
 
-    async def _run_canary(node_id: str, node_url: str, node_key: str) -> None:
-        if _cn is None:
+    async def _run_canary(node_id: str, node_url: str) -> None:
+        secret = node_execute_secrets.get(node_id)
+        if _cn is None or not secret:
             return
+        # A token of its own, never entered in job_tokens, so a canary job
+        # earns nothing when the node reports it.
+        token = issue_execute_token(secret, node_id, secrets.token_hex(16))
 
         async def _on_fail() -> None:
             _canary_fails[node_id] = _canary_fails.get(node_id, 0) + 1
@@ -230,13 +252,17 @@ def make_registry_app(
                     _store.set_online(node_id, False)
                 _audit("evict", node_id=node_id, reason="canary")
 
-        await _cn.maybe_check(node_url, node_key, on_fail=_on_fail)
+        await _cn.maybe_check(node_url, token, on_fail=_on_fail)
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):  # type: ignore[type-arg]
         async def _evict_loop() -> None:
             while True:
                 await asyncio.sleep(60)
+                _now = time.monotonic()
+                for _tok, (_, _, _issued) in list(job_tokens.items()):
+                    if _now - _issued > _JOB_TOKEN_TTL:
+                        job_tokens.pop(_tok, None)
                 evicted = reg.prune_stale()
                 for _nid in evicted:
                     if _store is not None:
@@ -286,6 +312,27 @@ def make_registry_app(
         h = request.headers.get("Authorization", "")
         return h[7:] if h.startswith("Bearer ") else ""
 
+    def _check_node_key(node_id: str, request: Request) -> None:
+        """403 unless the request carries *node_id*'s own key."""
+        stored_key = node_keys.get(node_id)
+        token = _extract_client_key(request)
+        if stored_key is None or not secrets.compare_digest(token, stored_key):
+            raise HTTPException(status_code=403, detail="Invalid node API key")
+
+    def _issue_match(entry: Any, client_key: str) -> dict[str, Any]:
+        """Record a single-use job token and wrap it in an execute token for
+        the client. The client gets the node's URL and that token, never a
+        node credential."""
+        node_id = entry.caps.node_id
+        job_token = secrets.token_hex(16)
+        job_tokens[job_token] = (node_id, client_key, time.monotonic())
+        return {
+            "url":           node_urls.get(node_id, ""),
+            "job_token":     job_token,
+            "execute_token": issue_execute_token(
+                node_execute_secrets[node_id], node_id, job_token),
+        }
+
     async def _require_client(request: Request) -> None:
         """Verify client Bearer token against client_keys set.  No-op when client_keys is None."""
         if client_keys is None:
@@ -299,7 +346,7 @@ def make_registry_app(
     @app.post("/nodes", status_code=201,
               dependencies=[Depends(_check_body_size), Depends(_register_limit),
                             Depends(_register_limit_hourly)])
-    async def register(body: dict[str, Any]) -> dict[str, Any]:
+    async def register(body: dict[str, Any], request: Request) -> dict[str, Any]:
         """
         Register or re-register a node.
 
@@ -310,6 +357,16 @@ def make_registry_app(
         - ``caps`` — ``NodeCapabilities.to_dict()``
         - ``url``  — the node's reachable HTTP base URL,
           e.g. ``"http://192.168.1.5:7700"``
+
+        - ``execute_secret`` — at least 32 random hex characters the node
+          generated. The registry signs the node's execute tokens with it and
+          never returns it.
+
+        Re-registering a node_id that is already registered requires that
+        node's current key in ``Authorization: Bearer <key>``, or, when the
+        registry requires signatures, a signature from the same public key.
+
+        ``caps.stake`` is not taken from the node; the registry sets it.
 
         Response
         ~~~~~~~~
@@ -333,8 +390,13 @@ def make_registry_app(
         try:
             caps = NodeCapabilities(**body["caps"])
             url: str = body["url"]
+            execute_secret = str(body["execute_secret"])
         except (KeyError, TypeError):
             raise HTTPException(status_code=422, detail="Invalid registration body")
+        if len(execute_secret) < 32 or not all(c in "0123456789abcdef" for c in execute_secret):
+            raise HTTPException(status_code=422,
+                                detail="execute_secret must be at least 32 lowercase hex characters")
+        caps.stake = 0   # self-reported stake would decide /match; nothing backs it yet
 
         if not allow_private_urls and _is_private_url(url):
             raise HTTPException(
@@ -404,6 +466,10 @@ def make_registry_app(
 
             node_pubkeys[caps.node_id] = pubkey_hex
 
+        elif caps.node_id in node_keys:
+            # Unsigned mode: taking over a registered node_id needs its key.
+            _check_node_key(caps.node_id, request)
+
         # Capture registration_index before mutating the registry.
         # This is safe because all async handlers run in the same event loop
         # thread (single-worker uvicorn) — no true concurrency between the
@@ -414,6 +480,7 @@ def make_registry_app(
 
         key = _reg_ops.new_api_key() if _reg_ops is not None else secrets.token_hex(32)
         node_keys[caps.node_id] = key
+        node_execute_secrets[caps.node_id] = execute_secret
 
         registered_at = datetime.now(tz=timezone.utc).isoformat()
 
@@ -429,6 +496,7 @@ def make_registry_app(
                 key,
                 _pk,
                 datetime.now(tz=timezone.utc).timestamp(),
+                execute_secret,
             )
 
         _audit("register", node_id=caps.node_id, url=url)
@@ -451,6 +519,7 @@ def make_registry_app(
         found = reg.deregister(node_id)
         node_urls.pop(node_id, None)
         node_keys.pop(node_id, None)
+        node_execute_secrets.pop(node_id, None)
         if _store is not None:
             _store.delete_node(node_id)
         _audit("deregister", node_id=node_id)
@@ -469,12 +538,8 @@ def make_registry_app(
         this specific node at registration time.  Returns 403 if the key is
         missing or wrong, 404 if the node_id is unknown.
         """
-        stored_key = node_keys.get(node_id)
-        if stored_key is not None:
-            header = request.headers.get("Authorization", "")
-            token  = header[7:] if header.startswith("Bearer ") else ""
-            if not secrets.compare_digest(token, stored_key):
-                raise HTTPException(status_code=403, detail="Invalid node API key")
+        if node_id in node_keys:
+            _check_node_key(node_id, request)
 
         found = reg.heartbeat(node_id)
         if not found:
@@ -493,9 +558,8 @@ def make_registry_app(
         """
         Return all currently online nodes.
 
-        Each element is ``NodeCapabilities.to_dict()`` extended with:
-        - ``"url"`` — the node's reachable HTTP address
-        - ``"node_execute_key"`` — bearer token for ``POST /execute`` on that node
+        Each element is ``NodeCapabilities.to_dict()`` extended with
+        ``"url"``. To run a job, get an execute token from ``GET /match``.
 
         Requires client authorization (``Authorization: Bearer <client_key>``).
         """
@@ -504,7 +568,6 @@ def make_registry_app(
         for entry in entries:
             d = entry.caps.to_dict()
             d["url"] = node_urls.get(entry.caps.node_id, "")
-            d["node_execute_key"] = node_keys.get(entry.caps.node_id, "")
             result.append(d)
         return result
 
@@ -514,6 +577,7 @@ def make_registry_app(
         backend:   str,
         n_qubits:  int,
         min_stake: int = 0,
+        node_id:   str | None = None,
     ) -> dict[str, Any]:
         """
         Find the best available node for a job.
@@ -523,17 +587,19 @@ def make_registry_app(
         - ``backend``   — ``"sv"``, ``"dm"``, or ``"tn"``
         - ``n_qubits``  — qubit count required by the job
         - ``min_stake`` — minimum stake (default 0)
+        - ``node_id``   — optional: match only this node (batch dispatch)
 
         Response
         ~~~~~~~~
-        On success: ``NodeCapabilities.to_dict()`` plus ``"url"`` and a
-        single-use ``"job_token"`` (32 hex chars).  The token must be
-        included in the subsequent ``POST /nodes/{id}/contribute`` call to
-        authorise the job report.  Tokens expire after one hour.
+        On success: ``NodeCapabilities.to_dict()`` plus ``"url"``, a
+        single-use ``"job_token"`` (32 hex chars) and an ``"execute_token"``
+        to send as ``Authorization: Bearer`` on the node's ``POST /execute``.
+        The execute token expires after ten minutes; the node reports the
+        job_token back in its own ``/contribute`` call.
 
         Raises **404** if no eligible node exists.
         """
-        entry = reg.match(backend, n_qubits, min_stake=min_stake)
+        entry = reg.match(backend, n_qubits, min_stake=min_stake, node_id=node_id)
         if entry is None:
             raise HTTPException(
                 status_code=404,
@@ -542,17 +608,8 @@ def make_registry_app(
                     f"n_qubits={n_qubits} min_stake={min_stake}"
                 ),
             )
-        d = entry.caps.to_dict()
-        d["url"] = node_urls.get(entry.caps.node_id, "")
-        d["node_execute_key"] = node_keys.get(entry.caps.node_id, "")
-
-        # Issue a single-use job token bound to this node AND the requesting
-        # client key (if auth is enabled). Prevents token theft between clients.
-        job_token = secrets.token_hex(16)
         ck = _extract_client_key(request) if client_keys is not None else ""
-        job_tokens[job_token] = (entry.caps.node_id, ck, time.monotonic())
-        d["job_token"] = job_token
-        return d
+        return {**entry.caps.to_dict(), **_issue_match(entry, ck)}
 
     # --- Job reports ---------------------------------------------------------
 
@@ -562,13 +619,17 @@ def make_registry_app(
         """
         Report a completed job to the registry.
 
-        Called by :class:`~zilver.client.NetworkCoordinator` after a
-        successful job execution.
+        Called by the node that ran the job, with its own key in
+        ``Authorization: Bearer <node_api_key>``. Clients never report work.
 
-        The ``job_token`` field must be the single-use token returned by the
-        ``GET /match`` call that preceded this job.  The token binds the
-        contribute request to a specific coordinator–node pair and is deleted
-        on first use.  Expired or reused tokens are rejected with HTTP 403.
+        The ``job_token`` field must be the single-use token from the
+        ``GET /match`` that the node's execute token carried. It must have
+        been issued for this node and is deleted on first use. Expired or
+        reused tokens are rejected with HTTP 403.
+
+        ``elapsed_ms`` must be finite and non-negative, and is capped at the
+        time since the match. ``memory_used_mb`` must be finite and
+        non-negative, and is capped at the node's RAM.
 
         The ``proof`` field must be a valid SHA-256 hex digest (64 hex
         characters) from :class:`~zilver.node.JobResult`.
@@ -584,6 +645,11 @@ def make_registry_app(
         ~~~~~~~~
         ``{"status": "ok"}``
         """
+        _entry = reg._entries.get(node_id)
+        if _entry is None or not _entry.online:
+            raise HTTPException(status_code=404, detail="Node not found")
+        _check_node_key(node_id, request)
+
         # Validate body fields first — a malformed request must not consume a token
         try:
             elapsed_ms     = float(body["elapsed_ms"])
@@ -591,6 +657,10 @@ def make_registry_app(
             proof          = str(body["proof"])
         except (KeyError, TypeError, ValueError):
             raise HTTPException(status_code=422, detail="Invalid contribute body")
+        if not (math.isfinite(elapsed_ms) and elapsed_ms >= 0
+                and math.isfinite(memory_used_mb) and memory_used_mb >= 0):
+            raise HTTPException(status_code=422,
+                                detail="elapsed_ms and memory_used_mb must be finite and >= 0")
 
         if len(proof) != 64 or not all(c in "0123456789abcdefABCDEF" for c in proof):
             raise HTTPException(status_code=422, detail="proof must be a 64-char SHA-256 hex string")
@@ -602,27 +672,23 @@ def make_registry_app(
         token_data = job_tokens.pop(job_token, None)
         if token_data is None:
             raise HTTPException(status_code=403, detail="Invalid or already-used job_token")
-        token_node_id, token_client_key, token_issued_at = token_data
-        if time.monotonic() - token_issued_at > _JOB_TOKEN_TTL:
+        token_node_id, _, token_issued_at = token_data
+        since_match_s = time.monotonic() - token_issued_at
+        if since_match_s > _JOB_TOKEN_TTL:
             raise HTTPException(status_code=403, detail="job_token has expired")
         if token_node_id != node_id:
             raise HTTPException(status_code=403, detail="job_token was not issued for this node")
-        # When client auth is active, token must belong to the same client key
-        if token_client_key:
-            req_key = _extract_client_key(request)
-            if not req_key or not secrets.compare_digest(req_key, token_client_key):
-                raise HTTPException(status_code=403, detail="job_token was not issued to this client")
 
-        _entry = reg._entries.get(node_id)
-        if _entry is None or not _entry.online:
-            raise HTTPException(status_code=404, detail="Node not found")
+        # The node cannot have worked longer than since the match, or used
+        # more memory than it has.
+        elapsed_ms     = min(elapsed_ms, since_match_s * 1000.0)
+        memory_used_mb = min(memory_used_mb, _entry.caps.ram_gb * 1024.0)
 
         extra = ledger.on_job(node_id, elapsed_ms, memory_used_mb) if ledger is not None else {}
 
         _url = node_urls.get(node_id, "")
-        _key = node_keys.get(node_id, "")
         if _url and _cn is not None:
-            asyncio.create_task(_run_canary(node_id, _url, _key))
+            asyncio.create_task(_run_canary(node_id, _url))
 
         return {"status": "ok", **extra}
 
@@ -640,13 +706,15 @@ def make_registry_app(
 
         Returns ``{"job_id": "<uuid>", "status": "queued"}``.
         """
+        ck = _extract_client_key(request) if client_keys is not None else ""
         idem_key = request.headers.get("X-Idempotency-Key", "")
         now = time.monotonic()
         if idem_key:
             cached = _idem_cache.get(idem_key)
             if cached:
                 jid, issued = cached
-                if now - issued < _JOB_TOKEN_TTL and jid in _async_jobs:
+                if (now - issued < _JOB_TOKEN_TTL and jid in _async_jobs
+                        and _async_jobs[jid].get("client_key") == ck):
                     return {"job_id": jid, "status": _async_jobs[jid]["status"]}
 
         job_id = str(uuid.uuid4())
@@ -664,6 +732,7 @@ def make_registry_app(
             _async_jobs[job_id] = {
                 "status": "failed",
                 "error": {"code": "invalid_circuit", "detail": "Missing or invalid n_qubits/backend"},
+                "client_key": ck,
             }
             return {"job_id": job_id, "status": "failed"}
 
@@ -674,32 +743,31 @@ def make_registry_app(
                 "error": {"code": "node_unreachable", "detail": "No eligible node available"},
             }
         else:
-            ck = _extract_client_key(request) if client_keys is not None else ""
-            token = secrets.token_hex(16)
-            job_tokens[token] = (entry.caps.node_id, ck, time.monotonic())
             _async_jobs[job_id] = {
                 "status": "matched",
                 "node_id": entry.caps.node_id,
-                "url": node_urls.get(entry.caps.node_id, ""),
-                "node_execute_key": node_keys.get(entry.caps.node_id, ""),
-                "job_token": token,
+                **_issue_match(entry, ck),
             }
+        _async_jobs[job_id]["client_key"] = ck
 
         return {"job_id": job_id, "status": _async_jobs[job_id]["status"]}
 
     @app.get("/jobs/{job_id}", dependencies=[Depends(_require_client)])
-    async def get_job(job_id: str) -> dict[str, Any]:
+    async def get_job(job_id: str, request: Request) -> dict[str, Any]:
         """
         Poll the status of an async job.
 
-        Returns ``{"job_id", "status"}`` plus ``"node_id"``, ``"job_token"``,
-        and ``"url"`` when status is ``"matched"``, or ``"error"`` when
-        status is ``"failed"``.
+        Returns ``{"job_id", "status"}`` plus ``"node_id"``, ``"url"``,
+        ``"job_token"`` and ``"execute_token"`` when status is ``"matched"``,
+        or ``"error"`` when status is ``"failed"``. Only the client that
+        submitted the job can read it.
         """
         job = _async_jobs.get(job_id)
-        if job is None:
+        ck = _extract_client_key(request) if client_keys is not None else ""
+        if job is None or job.get("client_key", "") != ck:
             raise HTTPException(status_code=404, detail="Job not found")
-        return {"job_id": job_id, **job}
+        return {"job_id": job_id,
+                **{k: v for k, v in job.items() if k not in ("client_key", "body")}}
 
     @app.get("/summary")
     async def summary() -> dict[str, Any]:

@@ -55,12 +55,19 @@ changes the Apple silicon or CPU results.
 - **A result that cannot be signed is no longer returned unsigned.** The signing
   path was `except Exception: pass`, so any failure while holding a key produced
   an empty signature and no error. It now raises.
+- **BREAKING:** network protocol update. Nodes, clients and the registry must
+  run the same version. `zilver-registry start` adds `--allow-unsigned-nodes`.
+- `JobResult.verify()` covers the whole job, for every result type.
 
 ### Removed
 - `zilver-node leaderboard`, and the unused `--wallet` option of `zilver-node
   start` with the matching `Node.start(wallet=...)` argument.
 
 ### Fixed
+- `method="accel"` runs gates on 3+ qubits.
+- Network `tn`, `dm` and sampled results; `SimJob` takes an optional `noise`.
+- Node memory admission on macOS and Linux.
+- Registry input validation.
 - **Metal kernels use precise `sin`/`cos`.** Under MLX 0.32 the fast-math
   versions made RX, RY, RZ, RZZ and U3 very slightly non-unitary, always in the
   same direction, so the norm shrank by about 1.5e-6 per layer: -4.4e-5 for

@@ -22,12 +22,14 @@ class RegistryEntry:
     last_seen:      epoch timestamp of most recent heartbeat
     jobs_in_flight: number of jobs currently executing (updated by coordinator)
     online:         False if the node has been explicitly deregistered
+    last_matched:   monotonic time match() last picked this node; rotates ties
     """
     caps:           NodeCapabilities
     registered_at:  float = field(default_factory=time.time)
     last_seen:      float = field(default_factory=time.time)
     jobs_in_flight: int   = 0
     online:         bool  = True
+    last_matched:   float = 0.0
 
     def heartbeat(self) -> None:
         self.last_seen = time.time()
@@ -127,16 +129,19 @@ class Registry:
         backend:  str,
         n_qubits: int,
         min_stake: int = 0,
+        node_id:  str | None = None,
     ) -> RegistryEntry | None:
         """
-        Find the best available node for a job.
+        Find the best available node for a job, or check that *node_id*
+        is eligible for it.
 
         Selection criteria:
           - online and not stale
           - supports the requested backend
           - qubit ceiling >= n_qubits
           - stake >= min_stake
-          - sorted by (jobs_in_flight ASC, stake DESC)
+          - sorted by (jobs_in_flight ASC, stake DESC), then the node
+            picked least recently, so equal nodes take turns
 
         Returns None if no eligible node exists.
         """
@@ -146,10 +151,14 @@ class Registry:
             and not e.is_stale(self.stale_ttl)
             and e.caps.supports(backend, n_qubits)
             and e.caps.stake >= min_stake
+            and (node_id is None or e.caps.node_id == node_id)
         ]
         if not candidates:
             return None
-        return min(candidates, key=lambda e: (e.jobs_in_flight, -e.caps.stake))
+        best = min(candidates,
+                   key=lambda e: (e.jobs_in_flight, -e.caps.stake, e.last_matched))
+        best.last_matched = time.monotonic()
+        return best
 
     def match_pair(
         self,
@@ -188,7 +197,7 @@ class Registry:
             and not e.is_stale(self.stale_ttl)
             and e.caps.supports(backend, n_qubits)
         ]
-        candidates.sort(key=lambda e: (e.jobs_in_flight, -e.caps.stake))
+        candidates.sort(key=lambda e: (e.jobs_in_flight, -e.caps.stake, e.last_matched))
         return candidates[:count]
 
     # --- Load tracking -------------------------------------------------------

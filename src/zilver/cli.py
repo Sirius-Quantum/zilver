@@ -223,10 +223,15 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
         except ValueError:
             pass
 
-    # --- API key ------------------------------------------------------------
+    # --- Credentials -------------------------------------------------------
+    # With a registry, api_key is this node's own registry key (heartbeat,
+    # re-register, contribute) and never leaves the node. Clients reach
+    # /execute with per-match tokens signed by reg_client.execute_secret.
+    # Without a registry, api_key is a static /execute key the operator chose.
     api_key: str | None = getattr(args, "api_key", None)
 
     reg_client: RegistryClient | None = None
+    on_executed = None
 
     if args.registry:
         reg_client = RegistryClient(args.registry)
@@ -238,41 +243,37 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
 
-            if api_key is None:
-                reg_client.register(node.caps, node_url,
-                                    private_key_bytes=private_key_bytes,
-                                    public_key_bytes=public_key_bytes,
-                                    se_label=_se_label)
-                api_key = reg_client.last_api_key
-                if api_key:
-                    try:
-                        from . import _node_ops
-                        _node_ops.store_api_key(node.caps.node_id, api_key)
-                        print("API key stored in macOS Keychain.")
-                    except Exception as exc:
-                        print(f"Warning: could not store API key in Keychain: {exc}",
-                              file=sys.stderr)
-            else:
-                reg_client.register(node.caps, node_url,
-                                    private_key_bytes=private_key_bytes,
-                                    public_key_bytes=public_key_bytes,
-                                    se_label=_se_label)
-                # Registry always issues a fresh api_key on re-registration.
-                # Update Keychain and local variable so the node serves with
-                # the key the registry will return to clients via /match.
-                new_key = reg_client.last_api_key
-                if new_key and new_key != api_key:
-                    api_key = new_key
-                    try:
-                        from . import _node_ops
-                        _node_ops.store_api_key(node.caps.node_id, api_key)
-                    except Exception:
-                        pass
+            # Re-registering a known node_id must present its current key.
+            reg_client.api_key = api_key
+            reg_client.register(node.caps, node_url,
+                                private_key_bytes=private_key_bytes,
+                                public_key_bytes=public_key_bytes,
+                                se_label=_se_label)
+            # The registry issues a fresh key on every registration.
+            new_key = reg_client.last_api_key
+            if new_key and new_key != api_key:
+                reg_client.api_key = new_key
+                try:
+                    from . import _node_ops
+                    _node_ops.store_api_key(node.caps.node_id, new_key)
+                    print("API key stored in macOS Keychain.")
+                except Exception as exc:
+                    print(f"Warning: could not store API key in Keychain: {exc}",
+                          file=sys.stderr)
 
-            # Set api_key on the registry client so that subsequent heartbeat
-            # calls include the Authorization header required by the registry.
-            if api_key:
-                reg_client.api_key = api_key
+            def on_executed(job_token: str, result) -> None:
+                """Report this node's own work; clients no longer do."""
+                try:
+                    reg_client.contribute(
+                        node_id=node.caps.node_id,
+                        elapsed_ms=result.elapsed_ms,
+                        memory_used_mb=result.memory_used_mb,
+                        proof=result.proof,
+                        job_token=job_token,
+                    )
+                except Exception as exc:
+                    print(f"Warning: could not report job to registry: {exc}",
+                          file=sys.stderr)
 
             print(f"Registered with registry at {args.registry}")
             _start_heartbeat(
@@ -307,9 +308,11 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
         host=args.host,
         port=args.port,
         log_level="warning",
-        api_key=api_key,
+        api_key=None if reg_client is not None else api_key,
         ssl_keyfile=ssl_key,
         ssl_certfile=ssl_cert,
+        execute_secret=reg_client.execute_secret if reg_client is not None else None,
+        on_executed=on_executed,
     )
 
 
@@ -475,7 +478,7 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
     ledger_path        = getattr(args, "ledger_path",        None) or os.environ.get("ZILVER_LEDGER_PATH")
     db_path            = getattr(args, "db_path",            None) or os.environ.get("ZILVER_DB_PATH")
     audit_log_path     = getattr(args, "audit_log_path",     None) or os.environ.get("ZILVER_AUDIT_LOG")
-    require_signed     = getattr(args, "require_signed",     False)
+    require_signed     = not getattr(args, "allow_unsigned_nodes", False)
     allow_private_urls = getattr(args, "allow_private_urls", False)
 
     # Load node allowlist from file (one pubkey hex per line, # comments allowed)
@@ -526,6 +529,9 @@ def _cmd_registry_start(args: argparse.Namespace) -> None:
 
     if require_signed:
         print("Signed registration enforced — nodes must present a valid signature.")
+    else:
+        print("Warning: unsigned node registration allowed (--allow-unsigned-nodes); "
+              "re-registering a node_id still needs that node's key.", file=sys.stderr)
 
     serve_registry(
         host=args.host,
@@ -614,8 +620,9 @@ def _build_node_parser() -> argparse.ArgumentParser:
     )
     grp_net.add_argument(
         "--api-key", dest="api_key", default=None,
-        help="API key issued by the registry. "
-             "If omitted, loaded from Keychain or obtained automatically on first run.",
+        help="This node's own registry key (never given to clients). "
+             "If omitted, loaded from Keychain or obtained automatically on first run. "
+             "Without --registry, a static key clients must send to /execute.",
     )
     grp_net.add_argument(
         "--allow-unsigned", dest="allow_unsigned", action="store_true", default=False,
@@ -699,9 +706,14 @@ def _build_registry_parser() -> argparse.ArgumentParser:
         help="Path to the job-accounting JSON file. If omitted, none is kept.",
     )
     p_start.add_argument(
-        "--require-signed", dest="require_signed", action="store_true", default=False,
-        help="Require signed registration from all nodes. "
-             "Rejects nodes that cannot prove hardware identity.",
+        "--require-signed", dest="require_signed", action="store_true", default=True,
+        help="Require signed registration from all nodes (the default; kept "
+             "so existing unit files keep working).",
+    )
+    p_start.add_argument(
+        "--allow-unsigned-nodes", dest="allow_unsigned_nodes", action="store_true",
+        default=False,
+        help="Accept nodes that register without a signature. Local and test use only.",
     )
     p_start.add_argument(
         "--allowed-pubkeys-file", dest="allowed_pubkeys_file", default=None,
