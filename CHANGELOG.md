@@ -5,8 +5,7 @@ All notable changes to Zilver are documented here. This project adheres to
 
 ## [Unreleased]
 
-Work on master since 0.6.2. All of it is on the AMD GPU path; nothing here
-changes the Apple silicon or CPU results.
+Work on master since 0.6.2.
 
 ### Added
 - **Gate fusion.** Consecutive gates are merged into one memory pass instead of
@@ -44,19 +43,9 @@ changes the Apple silicon or CPU results.
   amplitude. `ZILVER_SHRINK=0` still gives the dense timings, and because the
   variable is read at import the runner relaunches itself once to set it, exactly
   as it already did for `ZILVER_BACKEND`.
-- **BREAKING: `Node.start()` refuses to start without a signing key.** Pass
-  `public_key_bytes` with `private_key_bytes` or `se_label`, or pass the new
-  `allow_unsigned=True` for a local node that is explicitly unverifiable. An
-  unsigned result carries `node_signature = ""`, and `verify_result_signature()`
-  returns False for an empty signature exactly as it does for a forged one — so
-  a client could not tell an honest unsigned node from an attacker. Starting
-  unsigned is now a decision someone makes rather than a state a missing module
-  drops the node into silently. `zilver-node start --allow-unsigned` is the same
-  choice from the CLI; without it, a node with no key exits with a message naming
-  the two ways forward, not a traceback.
-- **A result that cannot be signed is no longer returned unsigned.** The signing
-  path was `except Exception: pass`, so any failure while holding a key produced
-  an empty signature and no error. It now raises.
+- **BREAKING:** `Node.start()` needs a signing key, or `allow_unsigned=True`
+  for local use (`zilver-node start --allow-unsigned`).
+- A result that cannot be signed raises instead of returning unsigned.
 - **BREAKING:** network protocol update. Nodes, clients and the registry must
   run the same version. `zilver-registry start` adds `--allow-unsigned-nodes`.
 - `JobResult.verify()` covers the whole job, for every result type.

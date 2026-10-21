@@ -172,7 +172,7 @@ class Node:
         `verify_result_signature()` returns False for an empty signature exactly
         as it does for a forged one -- so a client cannot tell an honest unsigned
         node from an attacker. Starting unsigned has to be a decision someone
-        made, not a state a missing module drops the node into silently.
+        made.
         """
         signed = public_key_bytes is not None and (
             private_key_bytes is not None or se_label is not None
@@ -276,9 +276,8 @@ class Node:
                 from .security import sign_result
             except ImportError as exc:
                 raise RuntimeError(
-                    "this node holds a signing key but the security module is "
-                    "unavailable, so the result cannot be signed; refusing to "
-                    "return it unsigned"
+                    "this node holds a signing key but cannot sign the result; "
+                    "refusing to return it unsigned"
                 ) from exc
             node_signature = sign_result(result.proof, private_key_bytes, se_label)
             node_pubkey    = public_key_bytes.hex()
