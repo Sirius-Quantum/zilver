@@ -3,9 +3,7 @@
 All notable changes to Zilver are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-Work on master since 0.6.2.
+## [0.7.0] - 2026-10-23
 
 ### Added
 - **Gate fusion.** Consecutive gates are merged into one memory pass instead of
