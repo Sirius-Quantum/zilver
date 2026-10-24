@@ -20,20 +20,26 @@ Node registration is invite-only. Open an issue at [github.com/Sirius-Quantum/zi
 ## Install and start
 
 ```bash
+brew install cloudflared
 pip install "zilver[network]"
-zilver-node start \
-  --registry https://registry.siriusquantum.com \
-  --public-url https://your-public-address.com \
-  --backends sv,dm
+zilver-node start --registry https://registry.siriusquantum.com --backends sv,dm
 ```
 
-To run your node continuously, add the start command to macOS Login Items or create a launchd plist.
+To run your node continuously, so it starts at login, restarts after a crash and keeps the Mac awake:
+
+```bash
+zilver-node install-service --backends sv,dm
+zilver-node uninstall-service     # to remove it
+```
+
+The service logs to `~/.zilver/node.log`.
 
 ## Public URL
 
-Your node must be reachable from the internet. If your Mac is on a home or office network, use one of the following:
+Your node must be reachable from the internet. By default `zilver-node start --registry …` opens a tunnel with `cloudflared` and registers that address, so a Mac on a home or office network needs no router changes. Turn this off with `--no-tunnel`.
 
-- **Cloudflare Tunnel** — `cloudflared tunnel --url http://localhost:7700` — free, no open port or router access needed
+If your node already has a public address, pass it with `--public-url` and no tunnel is opened. Ways to give it one:
+
 - **Port forwarding** — forward port 7700 on your router to your Mac's LAN IP
 - **ngrok** — `ngrok http 7700`
 - **VPS proxy** — nginx or Caddy reverse proxy on a VPS
@@ -44,7 +50,7 @@ On first run, a hardware-bound node identity is generated and stored in macOS Ke
 
 **Moving to a new Mac:** node identity is hardware-bound and cannot be transferred. On a new machine, `zilver-node start` generates a fresh identity. Contact [dev@siriusquantum.com](mailto:dev@siriusquantum.com) to migrate your operator approval to the new node.
 
-**If Keychain is wiped:** the node re-registers automatically on next start. Contribution history is tied to node ID, not credentials.
+**If Keychain is wiped:** the node identity is lost with it, and the next start generates a new one. Contact [dev@siriusquantum.com](mailto:dev@siriusquantum.com) to approve the new node. Contribution history stays with the old node ID.
 
 ## Qubit ceilings
 
@@ -78,7 +84,8 @@ Enable all three with `--backends sv,dm,tn`. The registry routes jobs to the app
 | `--backends` | `sv` | Backends to enable: `sv`, `dm`, `tn`, or any combination |
 | `--port` | `7700` | Port to listen on |
 | `--registry` | — | Registry URL |
-| `--public-url` | — | Publicly reachable URL for this node |
+| `--public-url` | — | Publicly reachable URL for this node; no tunnel is opened |
+| `--tunnel` / `--no-tunnel` | on with `--registry` | Open a tunnel with `cloudflared` so the node is reachable without port forwarding |
 
 ## Troubleshooting
 

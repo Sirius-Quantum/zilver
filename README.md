@@ -232,21 +232,27 @@ print(result.expectation, result.elapsed_ms)
 
 Network jobs run on the statevector backend (`sv`). Noisy and tensor-network simulation are available locally through `NoisyCircuit` and `MPSCircuit`.
 
-`result.verify(job)` checks that the result's checksum matches the job id, the parameters and the returned value. It only checks that these fields agree. It does not re-run the circuit.
+`result.verify(job)` checks that the result's checksum matches the whole job, including the circuit and parameters, and the returned values. It only checks that these agree. It does not re-run the circuit.
 
 ### Run a node
 
 Node registration is invite-only. Open an issue with your chip model, unified memory and intended uptime.
 
 ```bash
+brew install cloudflared
 pip install "zilver[network]"
-zilver-node start \
-  --registry https://registry.siriusquantum.com \
-  --public-url https://your-node.example.com \
-  --backends sv
+zilver-node start --registry https://registry.siriusquantum.com --backends sv
 ```
 
-The node must be reachable from the internet; a Cloudflare Tunnel is the simplest way. The node detects its chip and memory at startup and reports its qubit limits to the registry. See [NODES.md](https://github.com/sirius-quantum/zilver/blob/master/NODES.md) for public-URL options, identity and troubleshooting.
+The node opens a tunnel with `cloudflared`, so it is reachable behind a home router without port forwarding. If it already has a public address, pass `--public-url` instead. The node detects its chip and memory at startup and reports its qubit limits to the registry.
+
+To run the node in the background, so it starts at login and restarts after a crash:
+
+```bash
+zilver-node install-service     # zilver-node uninstall-service to remove it
+```
+
+See [NODES.md](https://github.com/sirius-quantum/zilver/blob/master/NODES.md) for public-URL options, identity and troubleshooting.
 
 Other commands:
 
