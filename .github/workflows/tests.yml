@@ -1,0 +1,33 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14          # Apple silicon: MLX and Metal kernels
+            python: "3.11"
+          - os: ubuntu-latest     # NumPy path
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,network,accel]"
+      - name: Tests
+        run: python -m pytest tests -q
+      - name: Examples
+        run: make test
