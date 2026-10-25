@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The measurement promised to AMD: the SAME statevector, in the SAME memory,
+# The SAME statevector, in the SAME memory,
 # executed on the CPU cores and then on the iGPU.
 #
 #     bash scripts/cpu-vs-igpu.sh            # 24 -> 30 qubits
