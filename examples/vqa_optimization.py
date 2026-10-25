@@ -4,7 +4,7 @@
 import sys
 import math
 import numpy as np
-import mlx.core as mx
+from zilver._array import mx   # MLX on Apple silicon, NumPy elsewhere
 
 sys.path.insert(0, "src")
 from zilver.circuit import hardware_efficient
