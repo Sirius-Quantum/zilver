@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "zilver"
 version = "0.7.0"
-description = "Quantum circuit simulator for Apple silicon and AMD GPUs, with an optional distributed network"
+description = "Distributed Quantum Simulation Network"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
