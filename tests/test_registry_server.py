@@ -283,3 +283,49 @@ class TestSummary:
         c.post("/nodes", json=_caps_body("n1", backends=["dm"]))
         s = c.get("/summary").json()
         assert set(s["backends"]) == {"sv", "dm"}
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting behind a reverse proxy
+# ---------------------------------------------------------------------------
+
+def _limited_client(peer: str) -> TestClient:
+    app = make_registry_app(Registry(), allow_private_urls=True, rate_limit=True)
+    return TestClient(app, client=(peer, 50000))
+
+
+def _register_burst(client: TestClient, fwd: str | None, n: int) -> list[int]:
+    headers = {"X-Forwarded-For": fwd} if fwd else {}
+    return [client.post("/nodes", json=_caps_body(node_id=f"n{i}"),
+                        headers=headers).status_code for i in range(n)]
+
+
+def test_rate_limit_keys_on_forwarded_ip_from_local_proxy():
+    """Behind a local proxy, two callers get separate buckets."""
+    client = _limited_client("127.0.0.1")
+    assert 429 in _register_burst(client, "203.0.113.1", 6)
+    assert 429 not in _register_burst(client, "203.0.113.2", 3)
+
+
+def test_rate_limit_uses_proxy_appended_entry():
+    """A client-supplied X-Forwarded-For prefix does not change the bucket."""
+    client = _limited_client("127.0.0.1")
+    assert 429 in _register_burst(client, "203.0.113.1", 6)
+    assert _register_burst(client, "198.51.100.9, 203.0.113.1", 1) == [429]
+
+
+def test_rate_limit_ignores_forwarded_header_from_remote_peer():
+    """A remote caller cannot pick its own bucket via X-Forwarded-For."""
+    client = _limited_client("203.0.113.50")
+    codes = [client.post("/nodes", json=_caps_body(node_id=f"n{i}"),
+                         headers={"X-Forwarded-For": f"198.51.100.{i}"}).status_code
+             for i in range(6)]
+    assert 429 in codes
+
+
+def test_submit_job_shares_match_rate_limit():
+    """POST /jobs issues a match, so it counts against the /match limit."""
+    client = _limited_client("127.0.0.1")
+    codes = [client.post("/jobs", json={"backend": "sv", "n_qubits": 2}).status_code
+             for _ in range(61)]
+    assert codes[-1] == 429

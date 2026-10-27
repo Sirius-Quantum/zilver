@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import math
 import secrets
@@ -72,6 +73,24 @@ def _is_private_url(url: str) -> bool:
 # Rate limiter
 # ---------------------------------------------------------------------------
 
+def _client_ip(request: Request) -> str:
+    """
+    The caller's IP. Behind a local reverse proxy every request arrives from
+    loopback, so the proxy's ``X-Forwarded-For`` is used instead. Its last entry is the one the proxy appended; earlier entries are
+    client-supplied and ignored. The header is never trusted from a remote peer.
+    """
+    peer = request.client.host if request.client else "local"
+    try:
+        loopback = ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        return peer
+    if loopback:
+        fwd = request.headers.get("x-forwarded-for", "").rsplit(",", 1)[-1].strip()
+        if fwd:
+            return fwd
+    return peer
+
+
 def _make_rate_limiter(max_calls: int, window_secs: int = 60) -> Callable:
     """
     Return a FastAPI dependency that enforces a per-IP sliding-window rate limit.
@@ -84,11 +103,17 @@ def _make_rate_limiter(max_calls: int, window_secs: int = 60) -> Callable:
         return _noop
 
     hits: dict[str, list[float]] = defaultdict(list)
+    last_sweep = [time.monotonic()]
 
     async def _limit(request: Request) -> None:
-        ip = request.client.host if request.client else "local"
+        ip = _client_ip(request)
         now = time.monotonic()
         cutoff = now - window_secs
+        if now - last_sweep[0] > window_secs:
+            # Drop idle buckets so one-off callers don't accumulate.
+            for k in [k for k, ts in hits.items() if not ts or ts[-1] <= cutoff]:
+                del hits[k]
+            last_sweep[0] = now
         valid = [t for t in hits[ip] if t > cutoff]
         if len(valid) >= max_calls:
             raise HTTPException(
@@ -263,6 +288,12 @@ def make_registry_app(
                 for _tok, (_, _, _issued) in list(job_tokens.items()):
                     if _now - _issued > _JOB_TOKEN_TTL:
                         job_tokens.pop(_tok, None)
+                for _jid, _job in list(_async_jobs.items()):
+                    if _now - _job.get("created", _now) > _JOB_TOKEN_TTL:
+                        _async_jobs.pop(_jid, None)
+                for _ik, (_, _issued) in list(_idem_cache.items()):
+                    if _now - _issued > _JOB_TOKEN_TTL:
+                        _idem_cache.pop(_ik, None)
                 evicted = reg.prune_stale()
                 for _nid in evicted:
                     if _store is not None:
@@ -695,7 +726,8 @@ def make_registry_app(
     # --- Async job API -------------------------------------------------------
 
     @app.post("/jobs", status_code=202,
-              dependencies=[Depends(_check_body_size), Depends(_require_client)])
+              dependencies=[Depends(_check_body_size), Depends(_match_limit),
+                            Depends(_require_client)])
     async def submit_job(request: Request, body: dict[str, Any]) -> dict[str, Any]:
         """
         Submit a job for async execution.
@@ -733,6 +765,7 @@ def make_registry_app(
                 "status": "failed",
                 "error": {"code": "invalid_circuit", "detail": "Missing or invalid n_qubits/backend"},
                 "client_key": ck,
+                "created": now,
             }
             return {"job_id": job_id, "status": "failed"}
 
@@ -748,7 +781,7 @@ def make_registry_app(
                 "node_id": entry.caps.node_id,
                 **_issue_match(entry, ck),
             }
-        _async_jobs[job_id]["client_key"] = ck
+        _async_jobs[job_id].update(client_key=ck, created=now)
 
         return {"job_id": job_id, "status": _async_jobs[job_id]["status"]}
 
@@ -767,7 +800,7 @@ def make_registry_app(
         if job is None or job.get("client_key", "") != ck:
             raise HTTPException(status_code=404, detail="Job not found")
         return {"job_id": job_id,
-                **{k: v for k, v in job.items() if k not in ("client_key", "body")}}
+                **{k: v for k, v in job.items() if k not in ("client_key", "body", "created")}}
 
     @app.get("/summary")
     async def summary() -> dict[str, Any]:
