@@ -17,6 +17,9 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
+
+_NODE_ID_FILE = Path.home() / ".zilver" / "node_id"
 
 
 # ---------------------------------------------------------------------------
@@ -93,28 +96,24 @@ def _available_memory_bytes() -> int:
     return 8 * (1024 ** 3)  # 8 GB fallback
 
 
-def _detect_hardware_uuid() -> str | None:
+def _local_node_id() -> str:
     """
-    Return the IOPlatformUUID of this Apple Silicon Mac.
-
-    Reads the hardware-unique device identifier via ``ioreg``.  Returns
-    ``None`` on non-macOS systems or if the command fails.
+    Return a random node_id kept in ``~/.zilver/node_id`` so it survives
+    restarts.  The id is public, so it is never derived from hardware.
     """
     try:
-        out = subprocess.check_output(
-            ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-        ).decode()
-        for line in out.splitlines():
-            if "IOPlatformUUID" in line:
-                # Line format: "IOPlatformUUID" = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-                parts = line.split('"')
-                if len(parts) >= 4:
-                    return parts[-2]
-    except Exception:
+        nid = _NODE_ID_FILE.read_text().strip()
+        if nid:
+            return nid
+    except OSError:
         pass
-    return None
+    nid = str(uuid.uuid4())
+    try:
+        _NODE_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _NODE_ID_FILE.write_text(nid + "\n")
+    except OSError:
+        pass
+    return nid
 
 
 def _detect_chip() -> str:
@@ -202,7 +201,7 @@ class NodeCapabilities:
         chip   = _detect_chip()
         ram_gb = _detect_ram_gb()
         return cls(
-            node_id       = node_id or _detect_hardware_uuid() or str(uuid.uuid4()),
+            node_id       = node_id or _local_node_id(),
             chip          = chip,
             ram_gb        = ram_gb,
             sv_qubits_max = _sv_qubit_ceiling(ram_gb),

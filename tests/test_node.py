@@ -79,6 +79,16 @@ class TestNodeCapabilities:
         caps = NodeCapabilities.detect(node_id="test-node-0")
         assert caps.node_id == "test-node-0"
 
+    def test_node_id_is_stable_across_restarts(self):
+        assert NodeCapabilities.detect().node_id == NodeCapabilities.detect().node_id
+
+    def test_node_id_is_random_not_hardware(self):
+        """A fresh install gets a fresh id, so the id cannot identify the machine."""
+        from zilver import node_types
+        first = NodeCapabilities.detect().node_id
+        node_types._NODE_ID_FILE.unlink()
+        assert NodeCapabilities.detect().node_id != first
+
     def test_ram_positive(self):
         caps = NodeCapabilities.detect()
         assert caps.ram_gb > 0

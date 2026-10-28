@@ -208,3 +208,56 @@ class TestExecute:
         assert node.caps.jobs_completed == 1
         c.post("/execute", json=_h_job())
         assert node.caps.jobs_completed == 2
+
+
+# ---------------------------------------------------------------------------
+# Job concurrency
+# ---------------------------------------------------------------------------
+
+def _post_concurrently(app, n: int) -> list[int]:
+    import asyncio
+    import httpx
+
+    async def go():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://node") as c:
+            rs = await asyncio.gather(*[c.post("/execute", json=_h_job()) for _ in range(n)])
+        return [r.status_code for r in rs]
+
+    return asyncio.run(go())
+
+
+def test_jobs_run_one_at_a_time():
+    import threading
+    import time
+    node = _node()
+    run, lock, active, peak = node.execute, threading.Lock(), [0], [0]
+
+    def slow_execute(job):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        with lock:
+            active[0] -= 1
+        return run(job)
+
+    node.execute = slow_execute
+    assert _post_concurrently(make_app(node), 3) == [200, 200, 200]
+    assert peak[0] == 1
+
+
+def test_busy_node_returns_503():
+    import time
+    from zilver.server import _MAX_PENDING_JOBS
+    node = _node()
+    run = node.execute
+
+    def slow_execute(job):
+        time.sleep(0.1)
+        return run(job)
+
+    node.execute = slow_execute
+    codes = _post_concurrently(make_app(node), _MAX_PENDING_JOBS + 1)
+    assert codes.count(200) == _MAX_PENDING_JOBS
+    assert codes.count(503) == 1

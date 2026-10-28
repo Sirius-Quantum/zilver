@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -19,6 +20,7 @@ _MAX_CIRCUIT_OPS  = 10_000
 _MAX_PARAMS       = 10_000
 _MAX_QUBITS       = 50
 _MAX_BODY_BYTES   = 2 * 1024 * 1024   # 2 MB — large enough for 10k ops + 10k params
+_MAX_PENDING_JOBS = 4                  # running + waiting; more get 503
 
 
 # ---------------------------------------------------------------------------
@@ -37,11 +39,12 @@ def make_app(
     Parameters
     ----------
     node:
-        A fully initialised :class:`~zilver.node.Node` instance.  The same
-        node object is reused across all requests; ``Node.execute`` is
-        thread-safe because it holds no mutable state beyond the
-        ``jobs_completed`` counter (incremented atomically in CPython due to
-        the GIL).
+        A fully initialised :class:`~zilver.node.Node` instance.  Jobs run
+        one at a time on a single worker thread: two large jobs that each
+        pass admission would otherwise exhaust memory together, and the
+        device backends are not documented as thread-safe.  Once
+        ``_MAX_PENDING_JOBS`` are running or waiting, ``POST /execute``
+        returns 503 so the caller can try another node.
     api_key:
         A static Bearer token the operator chose for ``POST /execute``, for a
         node run without a registry.
@@ -63,6 +66,8 @@ def make_app(
         ``fastapi.testclient.TestClient`` for testing.
     """
     app = FastAPI(title="zilver-node", version="0.1.0")
+    worker  = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zilver-job")
+    pending = 0   # only touched on the event loop, so no lock
 
     # --- Shared dependencies ------------------------------------------------
 
@@ -141,12 +146,18 @@ def make_app(
         except (KeyError, TypeError):
             raise HTTPException(status_code=422, detail="Invalid job body")
 
+        nonlocal pending
+        if pending >= _MAX_PENDING_JOBS:
+            raise HTTPException(status_code=503, detail="Node busy, try again later")
         loop = asyncio.get_running_loop()
+        pending += 1
         try:
-            result: JobResult = await loop.run_in_executor(None, node.execute, job)
+            result: JobResult = await loop.run_in_executor(worker, node.execute, job)
         except ValueError as exc:
             # node.execute raises ValueError for backend/capacity mismatches
             raise HTTPException(status_code=422, detail=str(exc))
+        finally:
+            pending -= 1
 
         if on_executed is not None and job_token:
             loop.run_in_executor(None, on_executed, job_token, result)
