@@ -57,7 +57,7 @@ The [Quickstart](https://github.com/sirius-quantum/zilver/blob/master/QUICKSTART
 | Platform | Backend | Notes |
 |---|---|---|
 | Apple silicon, macOS 13+ | MLX with custom Metal kernels | Main platform |
-| AMD GPU with PyTorch for ROCm | PyTorch with a fused HIP kernel | Tested on a Radeon 8060S under native Windows ROCm |
+| AMD GPU with PyTorch for ROCm | PyTorch with a fused HIP kernel | Tested on a Radeon 8060S under native Windows ROCm and an Instinct MI350P under Linux |
 | Any x86 or ARM CPU | NumPy, optionally Numba | `pip install "zilver[accel]"` for the fast CPU path |
 
 To run on an AMD GPU, install PyTorch for ROCm, then run `python -m zilver.gpu`. It simulates one circuit at each width from 20 to 32 qubits and prints the time and the norm of the final state for each.
@@ -77,14 +77,14 @@ To run on an AMD GPU, install PyTorch for ROCm, then run `python -m zilver.gpu`.
 
 Reproduce with `python benchmarks/statevector_vs_aer.py` (needs `[qiskit]`).
 
-**AMD Radeon 8060S, 128 GB unified memory.** The circuit from `python -m zilver.gpu`: Hadamard and Y-rotation on every qubit, then a CNOT chain. Fused HIP kernel, complex64, native Windows ROCm, measured 2026-09-17.
+**AMD Instinct MI350P and Radeon 8060S.** The circuit from `python -m zilver.gpu`: Hadamard and Y-rotation on every qubit, then a CNOT chain. Fused HIP kernel, complex64, the same code on both. MI350P: one compute partition (gfx950, 38.65 GB), Linux, ROCm 7.1, measured October 2026. Radeon 8060S: 128 GB unified memory, native Windows ROCm, measured 2026-09-17. Time in seconds, end to end.
 
-| Qubits | State size | End to end (s) | Gates only (s) | Norm |
-|-------:|-----------:|---------------:|---------------:|:-----|
-| 31 | 17.18 GB | 2.74 | 0.28 | 0.9999993 |
-| 32 | 34.36 GB | 6.06 | 0.59 | 0.9999993 |
+| Qubits | State size | MI350P | Radeon 8060S | Norm |
+|-------:|-----------:|-------:|-------------:|:-----|
+| 31 | 17.18 GB | 1.50 | 2.74 | 0.9999993 |
+| 32 | 34.36 GB | 1.84 | 6.06 | 0.9999993 |
 
-End to end includes allocating the state and copying it back to the host. The quantum Fourier transform of a basis state matches the exact amplitudes to within 2.7e-6 at every width from 20 to 32 qubits.
+End to end includes allocating the state and copying it back to the host; on the Radeon the gates alone take 0.59 s at 32 qubits. The kernel is tuned for the Radeon (gfx1151), not yet for MI350P. 32 qubits is the largest state that fits on one MI350P partition. The quantum Fourier transform of a basis state matches the exact amplitudes to within 2.7e-6 on both, at every width tested up to 32 qubits.
 
 The noise model is checked against real IBM and IQM hardware in [`benchmarks/`](https://github.com/sirius-quantum/zilver/tree/master/benchmarks).
 
