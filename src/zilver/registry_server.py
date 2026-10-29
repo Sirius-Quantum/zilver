@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
-from .node_types import NodeCapabilities, issue_execute_token
+from .node_types import BodySizeLimit, NodeCapabilities, issue_execute_token
 from .registry import Registry
 
 try:
@@ -307,6 +307,7 @@ def make_registry_app(
 
     app = FastAPI(title="zilver-registry", version="0.1.0", lifespan=_lifespan)
     app.state.job_tokens = job_tokens  # exposed for testing
+    app.add_middleware(BodySizeLimit, max_bytes=_MAX_BODY_BYTES)
 
     # --- Rate limiters (per-endpoint) ----------------------------------------
 
@@ -319,15 +320,6 @@ def make_registry_app(
     _contribute_limit = _make_rate_limiter(120 if rate_limit else 0)
 
     # --- Auth dependencies ---------------------------------------------------
-
-    async def _check_body_size(request: Request) -> None:
-        """Reject requests whose Content-Length exceeds _MAX_BODY_BYTES."""
-        length = request.headers.get("content-length")
-        if length and int(length) > _MAX_BODY_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Request body too large (limit {_MAX_BODY_BYTES // 1024} KB)",
-            )
 
     async def _require_admin(request: Request) -> None:
         """Verify admin Bearer token.  No-op when admin_key is None."""
@@ -375,7 +367,7 @@ def make_registry_app(
     # --- Registration -------------------------------------------------------
 
     @app.post("/nodes", status_code=201,
-              dependencies=[Depends(_check_body_size), Depends(_register_limit),
+              dependencies=[Depends(_register_limit),
                             Depends(_register_limit_hourly)])
     async def register(body: dict[str, Any], request: Request) -> dict[str, Any]:
         """
@@ -533,13 +525,15 @@ def make_registry_app(
         _audit("register", node_id=caps.node_id, url=url)
         return {"registered": True, "node_id": caps.node_id, "api_key": key}
 
-    @app.delete("/nodes/{node_id}", dependencies=[Depends(_require_admin)])
-    async def deregister(node_id: str) -> dict[str, Any]:
+    @app.delete("/nodes/{node_id}")
+    async def deregister(node_id: str, request: Request) -> dict[str, Any]:
         """
         Mark a node offline.
 
-        Requires ``Authorization: Bearer <admin_key>`` when the registry was
-        started with ``--admin-key`` / ``ZILVER_REGISTRY_KEY``.
+        Requires ``Authorization: Bearer <key>``, where the key is either the
+        node's own key (a node leaving the network on shutdown) or the admin
+        key when the registry was started with ``--admin-key`` /
+        ``ZILVER_REGISTRY_KEY``.
 
         The node remains in the registry's history (for diagnostics) but
         will no longer be returned by ``/match`` or ``/nodes``.
@@ -547,6 +541,10 @@ def make_registry_app(
         Returns ``{"deregistered": true}`` if found, ``{"deregistered": false}``
         if the node was not registered.
         """
+        token = _extract_client_key(request)
+        own_key = node_keys.get(node_id)
+        if not (own_key is not None and secrets.compare_digest(token, own_key)):
+            await _require_admin(request)
         found = reg.deregister(node_id)
         node_urls.pop(node_id, None)
         node_keys.pop(node_id, None)
@@ -645,7 +643,7 @@ def make_registry_app(
     # --- Job reports ---------------------------------------------------------
 
     @app.post("/nodes/{node_id}/contribute",
-              dependencies=[Depends(_check_body_size), Depends(_contribute_limit)])
+              dependencies=[Depends(_contribute_limit)])
     async def contribute(node_id: str, request: Request, body: dict[str, Any]) -> dict[str, Any]:
         """
         Report a completed job to the registry.
@@ -726,7 +724,7 @@ def make_registry_app(
     # --- Async job API -------------------------------------------------------
 
     @app.post("/jobs", status_code=202,
-              dependencies=[Depends(_check_body_size), Depends(_match_limit),
+              dependencies=[Depends(_match_limit),
                             Depends(_require_client)])
     async def submit_job(request: Request, body: dict[str, Any]) -> dict[str, Any]:
         """
@@ -815,7 +813,7 @@ def make_registry_app(
 
     # --- Credit estimation --------------------------------------------------
 
-    @app.post("/jobs/estimate", dependencies=[Depends(_check_body_size), Depends(_require_client)])
+    @app.post("/jobs/estimate", dependencies=[Depends(_require_client)])
     async def estimate_job(body: dict[str, Any]) -> dict[str, Any]:
         """
         Estimate the credit cost of a job before execution.

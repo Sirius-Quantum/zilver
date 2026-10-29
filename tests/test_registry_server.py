@@ -329,3 +329,51 @@ def test_submit_job_shares_match_rate_limit():
     codes = [client.post("/jobs", json={"backend": "sv", "n_qubits": 2}).status_code
              for _ in range(61)]
     assert codes[-1] == 429
+
+
+# ---------------------------------------------------------------------------
+# DELETE /nodes/{id} with an admin key configured
+# ---------------------------------------------------------------------------
+
+class TestDeregisterAuth:
+    def _setup(self):
+        app = make_registry_app(Registry(), allow_private_urls=True, admin_key="admin-secret")
+        c = TestClient(app)
+        keys = {n: c.post("/nodes", json=_caps_body(n)).json()["api_key"] for n in ("n0", "n1")}
+        return c, keys
+
+    def test_node_deregisters_itself_with_own_key(self):
+        c, keys = self._setup()
+        resp = c.delete("/nodes/n0", headers={"Authorization": f"Bearer {keys['n0']}"})
+        assert resp.status_code == 200 and resp.json()["deregistered"] is True
+
+    def test_other_nodes_key_is_refused(self):
+        c, keys = self._setup()
+        resp = c.delete("/nodes/n0", headers={"Authorization": f"Bearer {keys['n1']}"})
+        assert resp.status_code == 401
+
+    def test_no_key_is_refused(self):
+        c, _ = self._setup()
+        assert c.delete("/nodes/n0").status_code == 401
+
+    def test_admin_key_still_works(self):
+        c, _ = self._setup()
+        resp = c.delete("/nodes/n0", headers={"Authorization": "Bearer admin-secret"})
+        assert resp.json()["deregistered"] is True
+
+
+# ---------------------------------------------------------------------------
+# Request body limit
+# ---------------------------------------------------------------------------
+
+def test_chunked_body_over_limit_is_refused():
+    c, _ = _app_and_reg()
+
+    def chunks():
+        yield b'{"caps": {"pad": "'
+        for _ in range(100):
+            yield b"x" * 1024
+        yield b'"}}'
+
+    resp = c.post("/nodes", content=chunks(), headers={"content-type": "application/json"})
+    assert resp.status_code == 413

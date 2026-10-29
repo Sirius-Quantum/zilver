@@ -261,3 +261,54 @@ def test_busy_node_returns_503():
     codes = _post_concurrently(make_app(node), _MAX_PENDING_JOBS + 1)
     assert codes.count(200) == _MAX_PENDING_JOBS
     assert codes.count(503) == 1
+
+
+# ---------------------------------------------------------------------------
+# Request limits
+# ---------------------------------------------------------------------------
+
+def test_chunked_body_over_limit_is_refused():
+    def chunks():
+        yield b'{"pad": "'
+        for _ in range(3 * 1024):
+            yield b"x" * 1024
+        yield b'"}'
+
+    resp = _client().post("/execute", content=chunks(), headers={"content-type": "application/json"})
+    assert resp.status_code == 413
+
+
+def test_non_numeric_content_length_is_400():
+    import asyncio
+    app = make_app(_node())
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/execute", "raw_path": b"/execute",
+             "query_string": b"", "root_path": "", "scheme": "http", "http_version": "1.1",
+             "server": ("node", 80), "client": ("127.0.0.1", 1),
+             "headers": [(b"content-length", b"abc"), (b"content-type", b"application/json")]}
+    asyncio.run(app(scope, receive, send))
+    assert sent[0]["status"] == 400
+
+
+def test_statevector_result_is_capped():
+    from zilver.server import _MAX_STATEVECTOR_QUBITS
+    job = _h_job(n=_MAX_STATEVECTOR_QUBITS + 1)
+    job["result_type"] = "statevector"
+    resp = _client(sv_max=30).post("/execute", json=job)
+    assert resp.status_code == 422
+    assert "statevector" in resp.json()["detail"]
+
+
+def test_result_from_newer_node_is_accepted():
+    """A field this client does not know is ignored, not a crash."""
+    from zilver.node import JobResult
+    d = _client().post("/execute", json=_h_job()).json()
+    d["field_added_later"] = 1
+    assert JobResult.from_dict(d).node_id == "test-node"

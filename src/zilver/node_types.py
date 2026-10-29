@@ -224,6 +224,12 @@ class NodeCapabilities:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "NodeCapabilities":
+        """Build from a node's JSON, ignoring fields a newer node added."""
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in d.items() if k in known})
+
 
 # ---------------------------------------------------------------------------
 # Job / Result
@@ -311,6 +317,12 @@ class JobResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "JobResult":
+        """Build from a node's JSON, ignoring fields a newer node added."""
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in d.items() if k in known})
 
     def verify(self, job: SimJob) -> bool:
         """Check that the proof binds this result to exactly this job.
@@ -442,3 +454,55 @@ def check_execute_token(secret: str, node_id: str, token: str) -> str | None:
     if not hmac.compare_digest(mac, _execute_mac(secret, node_id, job_token, exp)):
         return None
     return job_token
+
+
+# ---------------------------------------------------------------------------
+# Request body limit
+# ---------------------------------------------------------------------------
+
+class BodySizeLimit:
+    """
+    ASGI middleware that rejects a request body larger than *max_bytes*.
+
+    The bytes are counted as they arrive, so a chunked body or a
+    Content-Length that understates the body cannot get past it; a declared
+    length over the limit is refused before anything is read.
+    """
+
+    def __init__(self, app, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        from fastapi import HTTPException
+        from fastapi.responses import JSONResponse
+
+        too_large = f"Request body too large (limit {self.max_bytes // 1024} KB)"
+        declared = dict(scope["headers"]).get(b"content-length")
+        if declared is not None:
+            try:
+                n = int(declared)
+            except ValueError:
+                n = -1
+            if n < 0:
+                await JSONResponse({"detail": "Invalid Content-Length"}, 400)(scope, receive, send)
+                return
+            if n > self.max_bytes:
+                await JSONResponse({"detail": too_large}, 413)(scope, receive, send)
+                return
+
+        seen = 0
+
+        async def counted():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > self.max_bytes:
+                    raise HTTPException(status_code=413, detail=too_large)
+            return message
+
+        await self.app(scope, counted, send)

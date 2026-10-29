@@ -118,8 +118,8 @@ def _resolve_tls(args: argparse.Namespace) -> tuple[str | None, str | None]:
             print(f"Certificate written to {_ZILVER_DIR}/node.{{key,crt}}", file=sys.stderr)
         except ImportError:
             print(
-                "Warning: cryptography package not installed; "
-                "starting without TLS. Install with: pip install zilver[network]",
+                "Warning: could not generate a TLS certificate; starting without TLS. "
+                "Pass --ssl-cert and --ssl-key to serve HTTPS.",
                 file=sys.stderr,
             )
             return None, None
@@ -275,8 +275,9 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
                     from . import _node_ops
                     _node_ops.store_api_key(node.caps.node_id, new_key)
                     print("API key stored in macOS Keychain.")
-                except Exception as exc:
-                    print(f"Warning: could not store API key in Keychain: {exc}",
+                except Exception:
+                    print("Warning: could not save this node's registry key; "
+                          "pass it with --api-key after a restart.",
                           file=sys.stderr)
 
             def on_executed(job_token: str, result) -> None:
@@ -318,7 +319,8 @@ def _cmd_node_start(args: argparse.Namespace) -> None:
     proto = "HTTPS" if ssl_cert else "HTTP (no TLS)"
     print(f"Serving {proto} on {args.host}:{args.port}  (Ctrl-C to stop)")
     if ssl_cert and not getattr(args, "ssl_cert", None):
-        print("Warning: using self-signed certificate — clients need --no-verify or verify=False",
+        print("Warning: using a self-signed certificate. Clients must pass "
+              "verify='<path to node.crt>' (or verify=False) to NodeClient / NetworkCoordinator",
               file=sys.stderr)
 
     serve(

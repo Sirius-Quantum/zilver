@@ -58,10 +58,11 @@ class NodeClient:
         url:     str,
         timeout: float = 30.0,
         api_key: str | None = None,
+        verify:  bool | str = True,
     ) -> None:
         self.url = url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.Client(timeout=timeout, verify=verify)
 
     def _auth_headers(self) -> dict[str, str]:
         key = getattr(self, "api_key", None)
@@ -95,7 +96,7 @@ class NodeClient:
             headers=self._auth_headers(),
         )
         resp.raise_for_status()
-        return JobResult(**resp.json())
+        return JobResult.from_dict(resp.json())
 
     def caps(self) -> NodeCapabilities:
         """
@@ -108,7 +109,7 @@ class NodeClient:
         """
         resp = self._client.get(f"{self.url}/caps")
         resp.raise_for_status()
-        return NodeCapabilities(**resp.json())
+        return NodeCapabilities.from_dict(resp.json())
 
     def health(self) -> dict[str, str]:
         """
@@ -182,10 +183,11 @@ class RegistryClient:
         url:     str,
         timeout: float = 10.0,
         api_key: str | None = None,
+        verify:  bool | str = True,
     ) -> None:
         self.url = url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.Client(timeout=timeout, verify=verify)
         self.last_api_key: str | None = None
         # Sent on every register() from this client, so a re-registration
         # keeps the secret the running node server checks tokens against.
@@ -272,7 +274,8 @@ class RegistryClient:
         bool
             ``True`` if the node was found and deregistered.
         """
-        resp = self._client.delete(f"{self.url}/nodes/{node_id}")
+        resp = self._client.delete(f"{self.url}/nodes/{node_id}",
+                                   headers=self._auth_headers())
         resp.raise_for_status()
         return resp.json().get("deregistered", False)
 
@@ -480,15 +483,18 @@ class NetworkCoordinator:
         timeout:         float = 30.0,
         api_key:         str | None = None,
         client_api_key:  str | None = None,
+        verify:          bool | str = True,
     ) -> None:
         self.registry_url = registry_url
         self.timeout = timeout
+        self.verify = verify
         self.api_key = api_key  # fallback for node /execute when no key in match response
         # client_api_key authenticates this coordinator to the registry (/match, /nodes, etc.)
         self._registry = RegistryClient(
             registry_url,
             timeout=min(timeout, 10.0),
             api_key=client_api_key,
+            verify=verify,
         )
 
     def submit(self, job: SimJob) -> JobResult:
@@ -524,7 +530,7 @@ class NetworkCoordinator:
         # The node reports its own work to the registry; the client does not.
         execute_token = entry.get("execute_token") or self.api_key
         with NodeClient(entry.get("url", ""), timeout=self.timeout,
-                        api_key=execute_token) as node_client:
+                        api_key=execute_token, verify=self.verify) as node_client:
             return node_client.execute(job)
 
     def submit_batch(

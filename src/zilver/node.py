@@ -443,10 +443,7 @@ def _expectation_pauli_term(state: "mx.array", pauli: str, n: int) -> float:
         mat = _PAULI_MATS[p]
         phi = apply_gate(phi, mat, [q], n)
 
-    mx.eval(state, phi)
-    psi_np = np.array(state.tolist(), dtype=np.complex64)
-    phi_np = np.array(phi.tolist(), dtype=np.complex64)
-    return float(np.dot(psi_np.conj(), phi_np).real)
+    return float(mx.real(mx.sum(mx.conj(state) * phi)).item())
 
 
 # ---------------------------------------------------------------------------

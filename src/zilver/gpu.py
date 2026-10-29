@@ -55,7 +55,10 @@ def main():
                 "python -m zilver.gpu runs the AMD GPU path and needs PyTorch for ROCm,\n"
                 "which is not installed: https://rocm.docs.amd.com/\n"
                 "On Apple silicon the GPU is used by default -- no extra step:\n"
-                "  from zilver.circuit import hardware_efficient"
+                "  import numpy as np\n"
+                "  from zilver.circuit import hardware_efficient\n"
+                "  circuit = hardware_efficient(n_qubits=20, depth=3)\n"
+                "  sv = circuit.statevector(np.zeros(circuit.n_params))"
             )
     _relaunch_with_import_time_env()
 

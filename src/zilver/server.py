@@ -10,7 +10,7 @@ from typing import Any, Callable
 from fastapi import Depends, FastAPI, HTTPException, Request
 
 from .node import Node, SimJob, JobResult
-from .node_types import check_execute_token
+from .node_types import BodySizeLimit, check_execute_token
 
 # ---------------------------------------------------------------------------
 # Input size limits
@@ -21,6 +21,7 @@ _MAX_PARAMS       = 10_000
 _MAX_QUBITS       = 50
 _MAX_BODY_BYTES   = 2 * 1024 * 1024   # 2 MB — large enough for 10k ops + 10k params
 _MAX_PENDING_JOBS = 4                  # running + waiting; more get 503
+_MAX_STATEVECTOR_QUBITS = 20           # a full state comes back as JSON: 2^20 pairs is ~40 MB
 
 
 # ---------------------------------------------------------------------------
@@ -66,19 +67,11 @@ def make_app(
         ``fastapi.testclient.TestClient`` for testing.
     """
     app = FastAPI(title="zilver-node", version="0.1.0")
+    app.add_middleware(BodySizeLimit, max_bytes=_MAX_BODY_BYTES)
     worker  = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zilver-job")
     pending = 0   # only touched on the event loop, so no lock
 
     # --- Shared dependencies ------------------------------------------------
-
-    async def _check_body_size(request: Request) -> None:
-        """Reject requests whose Content-Length exceeds _MAX_BODY_BYTES."""
-        length = request.headers.get("content-length")
-        if length and int(length) > _MAX_BODY_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Request body too large (limit {_MAX_BODY_BYTES // 1024} KB)",
-            )
 
     async def _require_auth(request: Request) -> str | None:
         """Verify the Bearer token and return its job_token, if it carries one.
@@ -97,7 +90,7 @@ def make_app(
 
     # --- Routes -------------------------------------------------------------
 
-    @app.post("/execute", dependencies=[Depends(_check_body_size)])
+    @app.post("/execute")
     async def execute(
         body: dict[str, Any], job_token: str | None = Depends(_require_auth),
     ) -> dict[str, Any]:
@@ -145,6 +138,12 @@ def make_app(
             job = SimJob.from_dict(body)
         except (KeyError, TypeError):
             raise HTTPException(status_code=422, detail="Invalid job body")
+        if job.result_type == "statevector" and job.n_qubits > _MAX_STATEVECTOR_QUBITS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"result_type='statevector' is limited to {_MAX_STATEVECTOR_QUBITS} qubits; "
+                       "request an expectation, samples or Pauli terms instead",
+            )
 
         nonlocal pending
         if pending >= _MAX_PENDING_JOBS:
